@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>ESP32 Telemetry Dashboard</title>
+    <style>
+        body {
+            background-color: #0d0d12;
+            color: #00ffcc;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .telemetry_panel {
+            border: 1px solid #00ffcc;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
+            text-align: center;
+            margin-bottom: 20px;
+        }
+        pre {
+            text-align: left;
+            font-size: 1.2rem;
+            color: #ffffff;
+            text-shadow: 0 0 5px rgba(255, 255, 255, 0.5);
+        }
+        #dynamic_image {
+            border: 2px solid #00ffcc;
+            border-radius: 10px;
+            box-shadow: 0 0 20px rgba(0, 255, 204, 0.4);
+        }
+    </style>
+</head>
+<body>
+
+    <div class="telemetry_panel">
+        <h2>GAMEPAD STATUS</h2>
+        <p>Connect gamepad and move left joystick.</p>
+        <pre id="telemetry_display">{ Waiting for input... }</pre>
+    </div>
+    
+    <img id="dynamic_image" src="imgs/img1.jpg" alt="Direction indicator" width="150">
+
+    <script>
+        // CONSTANTS
+        const API_URL = "http://192.168.1.50:8000/api/mover";
+        const IMAGE_FOLDER = "imgs/";
+        const REFRESH_RATE_MS = 100;
+
+        function update_telemetry_image(axis_x, axis_y) {
+            const image_element = document.getElementById("dynamic_image");
+            let image_name = "center.jpg";
+
+            // Y-axis logic (Up/Down)
+            if (axis_y <= -0.1 && axis_y >= -1.0) {
+                image_name = "img1.jpg";
+            } else if (axis_y >= 0.1 && axis_y <= 1.0) {
+                image_name = "img2.jpg";
+            } 
+            // X-axis logic (Left/Right)
+            else if (axis_x >= 0.1 && axis_x <= 1.0) {
+                image_name = "img3.jpg";
+            } else if (axis_x <= -0.1 && axis_x >= -1.0) {
+                image_name = "img4.jpg";
+            }
+
+            // Update DOM only if the image changed
+            if (!image_element.src.includes(image_name)) {
+                image_element.src = IMAGE_FOLDER + image_name;
+            }
+        }
+
+        function read_and_send_data() {
+            const gamepads = navigator.getGamepads();
+            const main_gamepad = gamepads[0];
+
+            if (main_gamepad) {
+                const joystick_data = {
+                    axis_x: parseFloat(main_gamepad.axes[0].toFixed(2)), 
+                    axis_y: parseFloat(main_gamepad.axes[1].toFixed(2))
+                };
+
+                document.getElementById("telemetry_display").innerText = JSON.stringify(joystick_data, null, 2);
+
+                update_telemetry_image(joystick_data.axis_x, joystick_data.axis_y);
+
+                fetch(API_URL, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(joystick_data)
+                }).catch(connection_error => console.log("Waiting for Raspberry Pi connection..."));
+            }
+        }
+
+        // Main execution loop
+        setInterval(read_and_send_data, REFRESH_RATE_MS);
+    </script>
+</body>
+</html>
