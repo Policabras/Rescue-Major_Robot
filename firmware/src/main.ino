@@ -3,17 +3,18 @@
 #include "Bridge.h"
 
 void setup() {
-    inicializarComunicacion(); // Inicializa el Serial a 115200
+    inicializarComunicacion(); // Inicializa el puerto Serial a 115200
     inicializarMotores();
     inicializarEncoders();
-    Serial.println("--- SCRIPT DE TELEMETRÍA Y CONTROL SERIAL ACTIVO ---");
-    Serial.println("Envía comandos con el formato: v,izq,der (Ejemplo: v,150,150)");
 }
 
 void loop() {
-    // 1. Simulador de encoders corre en segundo plano todo el tiempo
-    actualizarEncoders();
-
-    // 2. Escucha si la Raspberry Pi (o tú) mandó una orden de movimiento
+    // 1. Escucha las órdenes de la Raspberry Pi
     escucharRaspberryPi();
+
+    // 2. Procesa la rampa de aceleración/frenado suave
+    actualizarRampas();
+
+    // 3. El simulador calcula la telemetría en silencio
+    actualizarEncoders();
 }

@@ -3,15 +3,13 @@ import time
 import sys
 
 def iniciar_control():
-    # ==========================================
-    # CONFIGURACIÓN DEL PUERTO SERIAL
-    # ==========================================
+    # Recuerda cambiar a '/dev/ttyUSB0' si tu terminal arroja ese puerto
     PUERTO_SERIAL = '/dev/ttyACM0' 
     BAUDIOS = 115200
 
     try:
         arduino = serial.Serial(PUERTO_SERIAL, BAUDIOS, timeout=0.1)
-        time.sleep(2) 
+        time.sleep(2) # Esperar autoreset del Arduino
         print("[OK] ¡Conectado exitosamente al Arduino!")
     except Exception as e:
         print(f"[ERROR] No se pudo abrir el puerto {PUERTO_SERIAL}. {e}")
@@ -28,7 +26,7 @@ def iniciar_control():
 
     try:
         while True:
-            # Captura lo que escribas en el teclado del teléfono
+            # Captura el comando desde tu teclado SSH móvil
             comando_usuario = input("Comando movil > ").strip().lower()
 
             throttle = 0.0
@@ -52,18 +50,25 @@ def iniciar_control():
                 print("[!] Opción inválida. Usa: w, a, s, d, x o q")
                 continue
 
-            # Matemática de conversión para los motores
+            # Mezcla Arcade Drive
             izq_proporcional = throttle + steering
             der_proporcional = throttle - steering
 
+            # Escalado a rango de PWM
             vel_izq = max(-255, min(255, int(izq_proporcional * 255)))
             vel_der = max(-255, min(255, int(der_proporcional * 255)))
 
-            # Mandar la cadena de texto "v,izq,der" al Arduino
+            # Envío de datos empaquetados por Serial
             comando_serial = f"v,{vel_izq},{vel_der}\n"
             arduino.write(comando_serial.encode('utf-8'))
             
-            print(f" -> Ejecutando en Arduino: v,{vel_izq},{vel_der}\n")
+            # Limpieza activa del búfer: Leemos el ACK inmediato del Arduino
+            time.sleep(0.02)
+            if arduino.in_waiting > 0:
+                respuesta = arduino.readline().decode('utf-8').strip()
+                print(f" -> Arduino dice: {respuesta}\n")
+            else:
+                print(f" -> Ejecutando en Arduino: v,{vel_izq},{vel_der}\n")
 
     except KeyboardInterrupt:
         pass
@@ -72,6 +77,3 @@ def iniciar_control():
         arduino.write(b"v,0,0\n")
         arduino.close()
         print("[OK] Puerto cerrado de forma segura.")
-
-if __name__ == "__main__":
-    iniciar_control()
