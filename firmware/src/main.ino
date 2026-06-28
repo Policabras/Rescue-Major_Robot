@@ -18,3 +18,4 @@ void loop() {
     // 3. El simulador calcula la telemetría en silencio
     actualizarEncoders();
 }
+//q rancio

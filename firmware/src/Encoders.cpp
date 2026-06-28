@@ -33,3 +33,4 @@ void actualizarEncoders() {
         // NOTA: Los prints automáticos fueron removidos para no bloquear el puerto serie.
     }
 }
+//q rancio

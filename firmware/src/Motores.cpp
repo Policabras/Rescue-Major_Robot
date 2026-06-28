@@ -76,3 +76,4 @@ void actualizarRampas() {
 
 int obtenerVelocidadIzq() { return velocidadActualIzq; }
 int obtenerVelocidadDer() { return velocidadActualDer; }
+//q rancio

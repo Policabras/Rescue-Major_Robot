@@ -7,3 +7,4 @@ void inicializarComunicacion();
 void escucharRaspberryPi();
 
 #endif
+//q rancio

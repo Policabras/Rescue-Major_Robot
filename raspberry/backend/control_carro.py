@@ -80,3 +80,4 @@ def iniciar_control():
 
 if __name__ == "__main__":
     iniciar_control()
+      # q rancio

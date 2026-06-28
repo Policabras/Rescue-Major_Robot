@@ -37,3 +37,4 @@ void escucharRaspberryPi() {
         }
     }
 }
+//q rancio

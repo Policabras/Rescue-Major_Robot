@@ -8,3 +8,4 @@ void inicializarEncoders();
 void actualizarEncoders();
 
 #endif
+//q rancio

@@ -17,3 +17,4 @@ int obtenerVelocidadIzq();
 int obtenerVelocidadDer();
 
 #endif
+//q rancio
