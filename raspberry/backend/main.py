@@ -1,13 +1,14 @@
 import os
-from flask import Flask, send_from_directory, request
+from flask import Flask, request, jsonify
 import serial
 import time
 
-# Inicializamos Flask apuntando a tu carpeta frontend
-app = Flask(__name__, static_folder='../frontend')
+# El truco maestro: static_url_path='' hace que Flask encuentre la carpeta 'imgs'
+# directamente en tu frontend sin dar errores 404
+app = Flask(__name__, static_folder='../frontend', static_url_path='')
 
 # ==========================================
-# CONFIGURACIÓN SERIAL CON EL ARDUINO
+# CONEXIÓN SERIAL CON ARDUINO
 # ==========================================
 PUERTO_SERIAL = '/dev/ttyACM0'  # Cambia a /dev/ttyUSB0 si es necesario
 BAUDIOS = 115200
@@ -18,57 +19,49 @@ try:
     time.sleep(2)
     print("[OK] ¡Conectado exitosamente al Arduino por Serial!")
 except Exception as e:
-    print(f"[WARN] No se detectó Arduino en {PUERTO_SERIAL}. Modo simulación activo. {e}")
+    print(f"[WARN] Modo simulación activo. No se detectó Arduino. {e}")
 
 # ==========================================
-# RUTAS DEL SERVIDOR WEB
+# RUTAS DEL SERVIDOR (CORREGIDAS)
 # ==========================================
 
-# 1. Sirve la página web del control remoto
+# Sirve el index.html automáticamente cuando entras a la IP
 @app.route('/')
 def index():
-    return send_from_directory(app.static_folder, 'index.html')
+    return app.send_static_file('index.html')
 
-# 2. Recibe las pulsaciones de los botones del teléfono
-@app.route('/mover')
+# LA RUTA EXACTA QUE BUSCA TU COLOCOAL (POST /api/mover)
+@app.route('/api/mover', methods=['POST'])
 def mover():
-    comando_usuario = request.args.get('cmd', 'x')
-    
-    throttle = 0.0
-    steering = 0.0
-    
-    if comando_usuario == 'w':
-        throttle = 0.7
-    elif comando_usuario == 's':
-        throttle = -0.7
-    elif comando_usuario == 'a':
-        steering = -0.5
-    elif comando_usuario == 'd':
-        steering = 0.5
-    elif comando_usuario == 'x':
-        throttle = 0.0
-        steering = 0.0
+    data = request.get_json()
+    if not data:
+        return jsonify({"status": "error", "message": "Faltan datos"}), 400
 
-    # Mezcla Arcade Drive para motores
+    axis_x = data.get('axis_x', 0.0)
+    axis_y = data.get('axis_y', 0.0)
+
+    # Invertimos el eje Y del Gamepad API
+    throttle = -axis_y  
+    steering = axis_x
+
+    # Algoritmo Arcade Drive
     izq_proporcional = throttle + steering
     der_proporcional = throttle - steering
 
     vel_izq = max(-255, min(255, int(izq_proporcional * 255)))
     vel_der = max(-255, min(255, int(der_proporcional * 255)))
 
-    # Mandar comando al Arduino
     comando_serial = f"v,{vel_izq},{vel_der}\n"
-    print(f"Web mandó: {comando_usuario} -> Serial: v,{vel_izq},{vel_der}")
     
+    # Esto te dejará ver en la terminal si los botones están respondiendo
+    print(f"[ENVIO] X: {axis_x} | Y: {axis_y} ==> Serial: {comando_serial.strip()}")
+
     if arduino:
         arduino.write(comando_serial.encode('utf-8'))
-        # Limpieza rápida del búfer por si el Arduino responde
         if arduino.in_waiting > 0:
-            arduino.readline() 
+            arduino.readline()
 
-    return "OK"
+    return jsonify({"status": "success", "izq": vel_izq, "der": vel_der})
 
 if __name__ == "__main__":
-    # Arranca el servidor accesible para cualquier dispositivo en la misma red Wi-Fi
-    # Puerto por defecto: 5000
-    app.run(host='0.0.0.0', port=5000, debug=False)
+    app.run(host='0.0.0.0', port=8000, debug=False)
