@@ -40,36 +40,133 @@
 
     <div class="telemetry_panel">
         <h2>GAMEPAD STATUS</h2>
-        <p>Connect gamepad and move left joystick.</p>
+        <p>Connect gamepad and move left joystick or use WASD keys.</p>
         <pre id="telemetry_display">{ Waiting for input... }</pre>
     </div>
     
-    <img id="dynamic_image" src="imgs/img1.jpg" alt="Direction indicator" width="150">
+    <img id="dynamic_image" src="imgs/center.jpg" alt="Direction indicator" width="150">
 
     <script>
         // CONSTANTS
-        const API_URL = "http://192.168.1.50:8000/api/mover";
+        // En tu frontend/index.html cambia esta línea:
+        const API_URL = "http://192.168.100.13:8000/api/mover"; // Cambia esta IP por la de tu Raspberry Pi
         const IMAGE_FOLDER = "imgs/";
-        const REFRESH_RATE_MS = 100;
+        const REFRESH_RATE_MS = 200;
+
+        // Valores OBJETIVO (A dónde queremos llegar según las teclas)
+let targetX = 0;
+let targetY = 0;
+
+// Valores ACTUALES (Los que suben poco a poco y se envían a Python)
+let currentX = 0;
+let currentY = 0;
+
+// --- AJUSTE DE RAMPAS (Sintoniza el comportamiento aquí) ---
+const ACCELERATION_STEP = 0.08; // Qué tan rápido acelera (Valores más chicos = más lento)
+const DECELERATION_STEP = 0.15; // Qué tan rápido frena (Un poco más alto para que responda bien)
+
+// Objeto para registrar qué teclas están activas ahorita
+const teclas = { w: false, a: false, s: false, d: false };
+
+// 1. ESCUCHAR EL TECLADO
+window.addEventListener('keydown', (e) => {
+    const key = e.key.toLowerCase();
+    if (key in teclas) teclas[key] = true;
+});
+
+window.addEventListener('keyup', (e) => {
+    const key = e.key.toLowerCase();
+    if (key in teclas) teclas[key] = false;
+});
+
+// 2. EL BUCLE PRINCIPAL (Se ejecuta cada 150ms)
+setInterval(() => {
+    // Calcular el OBJETIVO basándonos en las teclas presionadas
+    // Eje Y: W es adelante (-1 en joysticks), S es atrás (1)
+    if (teclas.w) targetY = -1.0;
+    else if (teclas.s) targetY = 1.0;
+    else targetY = 0.0;
+
+    // Eje X: A es izquierda (-1), D es derecha (1)
+    if (teclas.a) targetX = -1.0;
+    else if (teclas.d) targetX = 1.0;
+    else targetX = 0.0;
+
+    // --- APLICAR RAMPA EN EJE Y (Adelante/Atrás) ---
+    if (currentY < targetY) {
+        // Si necesitamos acelerar hacia adelante o reducir reversa
+        let step = (targetY === 0) ? DECELERATION_STEP : ACCELERATION_STEP;
+        currentY = Math.min(targetY, currentY + step);
+    } else if (currentY > targetY) {
+        // Si necesitamos frenar o meter reversa
+        let step = (targetY === 0) ? DECELERATION_STEP : ACCELERATION_STEP;
+        currentY = Math.max(targetY, currentY - step);
+    }
+
+    // --- APLICAR RAMPA EN EJE X (Giro Izquierda/Derecha) ---
+    if (currentX < targetX) {
+        let step = (targetX === 0) ? DECELERATION_STEP : ACCELERATION_STEP;
+        currentX = Math.min(targetX, currentX + step);
+    } else if (currentX > targetX) {
+        let step = (targetX === 0) ? DECELERATION_STEP : ACCELERATION_STEP;
+        currentX = Math.max(targetX, currentX - step);
+    }
+
+    // Limitar decimales feos para el JSON
+    const datosEnviar = {
+        axis_x: parseFloat(currentX.toFixed(2)),
+        axis_y: parseFloat(currentY.toFixed(2))
+    };
+
+    // Solo enviamos datos si el carro se está moviendo o si justo se acaba de detener
+    // Esto evita inundar la red si el carro está completamente quieto
+    if (currentX !== 0 || currentY !== 0 || targetX !== 0 || targetY !== 0) {
+        enviarComando(datosEnviar);
+    }
+
+}, REFRESH_RATE_MS);
+
+// 3. FUNCIÓN DE ENVÍO POR RED (Se mantiene igual)
+function enviarComando(data) {
+    fetch(API_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+    })
+    .then(res => res.json())
+    .then(json => {
+        console.log(`Enviado: X=${data.axis_x} Y=${data.axis_y} | Motores: Izq=${json.rpm_izq} Der=${json.rpm_der}`);
+    })
+    .catch(err => console.error("Error en la API inalámbrica:", err));
+}
+
+        // Variables para simular el joystick cuando no hay control físico
+        let sim_x = 0.0;
+        let sim_y = 0.0;
+
+        // Escuchamos las teclas del teclado
+        const keys = { w: false, a: false, s: false, d: false };
+        window.addEventListener("keydown", (e) => { if (e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = true; });
+        window.addEventListener("keyup", (e) => { if (e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = false; });
 
         function update_telemetry_image(axis_x, axis_y) {
             const image_element = document.getElementById("dynamic_image");
             let image_name = "center.jpg";
 
-            // Y-axis logic (Up/Down)
+            // Lógica del eje Y (Adelante/Atrás)
             if (axis_y <= -0.1 && axis_y >= -1.0) {
                 image_name = "img1.jpg";
             } else if (axis_y >= 0.1 && axis_y <= 1.0) {
                 image_name = "img2.jpg";
             } 
-            // X-axis logic (Left/Right)
+            // Lógica del eje X (Izquierda/Derecha)
             else if (axis_x >= 0.1 && axis_x <= 1.0) {
                 image_name = "img3.jpg";
             } else if (axis_x <= -0.1 && axis_x >= -1.0) {
                 image_name = "img4.jpg";
             }
 
-            // Update DOM only if the image changed
+            // Actualiza el DOM solo si la imagen cambió
             if (!image_element.src.includes(image_name)) {
                 image_element.src = IMAGE_FOLDER + image_name;
             }
@@ -78,28 +175,44 @@
         function read_and_send_data() {
             const gamepads = navigator.getGamepads();
             const main_gamepad = gamepads[0];
+            let joystick_data = { axis_x: 0.0, axis_y: 0.0 };
 
             if (main_gamepad) {
-                const joystick_data = {
-                    axis_x: parseFloat(main_gamepad.axes[0].toFixed(2)), 
-                    axis_y: parseFloat(main_gamepad.axes[1].toFixed(2))
-                };
+                // --- MODO REAL: Usando el mando ---
+                joystick_data.axis_x = parseFloat(main_gamepad.axes[0].toFixed(2));
+                joystick_data.axis_y = parseFloat(main_gamepad.axes[1].toFixed(2));
+                document.querySelector(".telemetry_panel h2").innerText = "GAMEPAD STATUS (CONNECTED)";
+            } else {
+                // --- MODO SIMULADOR: Si no hay mando, usamos WASD ---
+                document.querySelector(".telemetry_panel h2").innerText = "GAMEPAD STATUS (SIMULATOR MODE - USE WASD)";
+                
+                if (keys.w) sim_y = -1.0;
+                else if (keys.s) sim_y = 1.0;
+                else sim_y = 0.0;
 
-                document.getElementById("telemetry_display").innerText = JSON.stringify(joystick_data, null, 2);
+                if (keys.a) sim_x = -1.0;
+                else if (keys.d) sim_x = 1.0;
+                else sim_x = 0.0;
 
-                update_telemetry_image(joystick_data.axis_x, joystick_data.axis_y);
-
-                fetch(API_URL, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json"
-                    },
-                    body: JSON.stringify(joystick_data)
-                }).catch(connection_error => console.log("Waiting for Raspberry Pi connection..."));
+                joystick_data.axis_x = sim_x;
+                joystick_data.axis_y = sim_y;
             }
+
+            // Mostrar telemetría en pantalla
+            document.getElementById("telemetry_display").innerText = JSON.stringify(joystick_data, null, 2);
+            update_telemetry_image(joystick_data.axis_x, joystick_data.axis_y);
+
+            // Enviar datos JSON a la Raspberry Pi
+            fetch(API_URL, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(joystick_data)
+            }).catch(connection_error => console.log("Esperando conexión con la Raspberry Pi en " + API_URL));
         }
 
-        // Main execution loop
+        // Bucle de ejecución principal
         setInterval(read_and_send_data, REFRESH_RATE_MS);
     </script>
 </body>

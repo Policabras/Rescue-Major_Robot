@@ -1,36 +1,59 @@
 #include "Encoders.h"
 #include "Motores.h"
 
-unsigned long ultimoTiempoEncoders = 0;
-double rpmSimuladasIzq = 0.0;
-double posicionAnguloIzq = 0.0;
-double rpmSimuladasDer = 0.0;
-double posicionAnguloDer = 0.0;
+long contadorFantasmaIzq = 0;
+long contadorFantasmaDer = 0;
+const int PPR = 4096; 
+
+unsigned long tiempoAnteriorSim = 0;
+unsigned long tiempoAnteriorCalc = 0;
+
+long ultimoContadorIzq = 0;
+long ultimoContadorDer = 0;
+
+// ¡AGREGA ESTAS DOS VARIABLES GLOBALES!
+float rpmRealIzq = 0.0;
+float rpmRealDer = 0.0;
 
 void inicializarEncoders() {
-    ultimoTiempoEncoders = millis();
+    tiempoAnteriorSim = millis();
+    tiempoAnteriorCalc = millis();
 }
 
 void actualizarEncoders() {
     unsigned long tiempoActual = millis();
-    if (tiempoActual - ultimoTiempoEncoders >= 100) {
-        ultimoTiempoEncoders = tiempoActual;
+    
+    if (tiempoActual - tiempoAnteriorSim >= 10) {
+        tiempoAnteriorSim = tiempoActual;
+        int velIzq = obtenerVelocidadIzq();
+        int velDer = obtenerVelocidadDer();
+        if (velIzq != 0) contadorFantasmaIzq += (velIzq / 15); 
+        if (velDer != 0) contadorFantasmaDer += (velDer / 15); 
+    }
 
-        // Lado Izquierdo
-        int velFisicaIzq = obtenerVelocidadIzq();
-        rpmSimuladasIzq = (velFisicaIzq / 255.0) * 150.0;
-        posicionAnguloIzq += (rpmSimuladasIzq * 6.0) * 0.1;
-        if (posicionAnguloIzq >= 360.0) posicionAnguloIzq -= 360.0;
-        if (posicionAnguloIzq < 0.0) posicionAnguloIzq += 360.0;
+    unsigned long tiempoTranscurrido = tiempoActual - tiempoAnteriorCalc;
+    if (tiempoTranscurrido >= 200) {
+        long pulsosNuevosIzq = contadorFantasmaIzq - ultimoContadorIzq;
+        // Modificado: Ahora guardamos el resultado en las variables globales
+        rpmRealIzq = ((pulsosNuevosIzq / (float)PPR) * 60000.0) / tiempoTranscurrido;
 
-        // Lado Derecho
-        int velFisicaDer = obtenerVelocidadDer();
-        rpmSimuladasDer = (velFisicaDer / 255.0) * 150.0;
-        posicionAnguloDer += (rpmSimuladasDer * 6.0) * 0.1;
-        if (posicionAnguloDer >= 360.0) posicionAnguloDer -= 360.0;
-        if (posicionAnguloDer < 0.0) posicionAnguloDer += 360.0;
+        long pulsosNuevosDer = contadorFantasmaDer - ultimoContadorDer;
+        rpmRealDer = ((pulsosNuevosDer / (float)PPR) * 60000.0) / tiempoTranscurrido;
 
-        // NOTA: Los prints automáticos fueron removidos para no bloquear el puerto serie.
+        // Telemetría para la Pi
+        Serial.print("t,");
+        Serial.print(contadorFantasmaIzq); Serial.print(",");
+        Serial.print(contadorFantasmaDer); Serial.print(",");
+        Serial.print(rpmRealIzq, 1);           Serial.print(",");
+        Serial.print(rpmRealDer, 1);
+        Serial.println();
+
+        ultimoContadorIzq = contadorFantasmaIzq;
+        ultimoContadorDer = contadorFantasmaDer;
+        tiempoAnteriorCalc = tiempoActual;
     }
 }
-//q rancio
+
+// ¡AGREGA ESTAS DOS FUNCIONES AL FINAL!
+float obtenerRpmRealesIzq() { return rpmRealIzq; }
+float obtenerRpmRealesDer() { return rpmRealDer; }

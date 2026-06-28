@@ -3,9 +3,11 @@
 
 #include <Arduino.h>
 
-// Declaración de funciones del simulador
 void inicializarEncoders();
 void actualizarEncoders();
 
+// ¡AGREGA ESTAS DOS LÍNEAS!
+float obtenerRpmRealesIzq();
+float obtenerRpmRealesDer();
+
 #endif
-//q rancio
