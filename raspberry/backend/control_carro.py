@@ -3,20 +3,21 @@ import time
 import sys
 
 def iniciar_control():
-    # Recuerda cambiar a '/dev/ttyUSB0' si tu terminal arroja ese puerto
+    # Recuerda verificar si tu puerto es ttyACM0 o ttyUSB0
     PUERTO_SERIAL = '/dev/ttyACM0' 
     BAUDIOS = 115200
 
     try:
-        arduino = serial.Serial(PUERTO_SERIAL, BAUDIOS, timeout=0.1)
-        time.sleep(2) # Esperar autoreset del Arduino
+        # Ponemos un timeout de 0.5s por si el Arduino se desconecta, no colgar el script
+        arduino = serial.Serial(PUERTO_SERIAL, BAUDIOS, timeout=0.5)
+        time.sleep(2) 
         print("[OK] ¡Conectado exitosamente al Arduino!")
     except Exception as e:
         print(f"[ERROR] No se pudo abrir el puerto {PUERTO_SERIAL}. {e}")
         return
 
     print("\n-------------------------------------------------")
-    print("   ¡MODO TERMINAL MÓVIL ACTIVO (WASD + Enter)!")
+    print("   ¡MODO TERMINAL MÓVIL ESTABLE (WASD + Enter)!")
     print("-------------------------------------------------")
     print(" Escribe una letra y presiona ENTER en tu cel:")
     print("  w -> Avanzar  |  s -> Retroceder")
@@ -26,7 +27,6 @@ def iniciar_control():
 
     try:
         while True:
-            # Captura el comando desde tu teclado SSH móvil
             comando_usuario = input("Comando movil > ").strip().lower()
 
             throttle = 0.0
@@ -50,25 +50,25 @@ def iniciar_control():
                 print("[!] Opción inválida. Usa: w, a, s, d, x o q")
                 continue
 
-            # Mezcla Arcade Drive
+            # Matemática Arcade Drive
             izq_proporcional = throttle + steering
             der_proporcional = throttle - steering
 
-            # Escalado a rango de PWM
             vel_izq = max(-255, min(255, int(izq_proporcional * 255)))
             vel_der = max(-255, min(255, int(der_proporcional * 255)))
 
-            # Envío de datos empaquetados por Serial
+            # 1. Enviar comando al Arduino con su \n bien marcado
             comando_serial = f"v,{vel_izq},{vel_der}\n"
             arduino.write(comando_serial.encode('utf-8'))
+            arduino.flush() # Forzar el envío inmediato de los bytes
+
+            # 2. ESPERA SÍNCRONA: Python se frena hasta recibir la respuesta del Arduino
+            respuesta = arduino.readline().decode('utf-8').strip()
             
-            # Limpieza activa del búfer: Leemos el ACK inmediato del Arduino
-            time.sleep(0.02)
-            if arduino.in_waiting > 0:
-                respuesta = arduino.readline().decode('utf-8').strip()
-                print(f" -> Arduino dice: {respuesta}\n")
+            if respuesta:
+                print(f" -> Arduino confirmo: {respuesta}\n")
             else:
-                print(f" -> Ejecutando en Arduino: v,{vel_izq},{vel_der}\n")
+                print(" -> [WARN] El Arduino tardó mucho en responder (Timeout).\n")
 
     except KeyboardInterrupt:
         pass
@@ -77,3 +77,6 @@ def iniciar_control():
         arduino.write(b"v,0,0\n")
         arduino.close()
         print("[OK] Puerto cerrado de forma segura.")
+
+if __name__ == "__main__":
+    iniciar_control()
