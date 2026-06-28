@@ -2,7 +2,6 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
     <title>ESP32 Telemetry Dashboard</title>
     <style>
         body {
@@ -13,153 +12,94 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            min-height: 100vh;
+            height: 100vh;
             margin: 0;
-            padding: 10px;
-            box-sizing: border-box;
         }
         .telemetry_panel {
             border: 1px solid #00ffcc;
-            padding: 15px;
+            padding: 20px;
             border-radius: 8px;
             box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
             text-align: center;
             margin-bottom: 20px;
-            width: 90%;
-            max-width: 400px;
         }
         pre {
             text-align: left;
-            font-size: 1.1rem;
+            font-size: 1.2rem;
             color: #ffffff;
             text-shadow: 0 0 5px rgba(255, 255, 255, 0.5);
-            margin: 10px 0 0 0;
         }
         #dynamic_image {
             border: 2px solid #00ffcc;
             border-radius: 10px;
             box-shadow: 0 0 20px rgba(0, 255, 204, 0.4);
-            margin-bottom: 20px;
         }
-        /* ESTILOS PARA LOS BOTONES TÁCTILES EN EL CELULAR */
-        .control-pad {
-            display: grid;
-            grid-template-columns: 70px 70px 70px;
-            grid-template-rows: 70px 70px 70px;
-            gap: 12px;
-            margin-top: 10px;
-        }
-        .btn {
-            background-color: #1a1a24;
-            color: #00ffcc;
-            border: 1px solid #00ffcc;
-            border-radius: 12px;
-            font-size: 24px;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            user-select: none;
-            -webkit-user-select: none;
-        }
-        .btn:active { background-color: #00ffcc; color: #0d0d12; box-shadow: 0 0 15px #00ffcc; }
-        #btn-up { grid-column: 2; }
-        #btn-left { grid-column: 1; grid-row: 2; }
-        #btn-stop { grid-column: 2; grid-row: 2; border-color: #ff3333; font-size: 14px; color: #ff3333;}
-        #btn-right { grid-column: 3; grid-row: 2; }
-        #btn-down { grid-column: 2; grid-row: 3; }
     </style>
 </head>
 <body>
 
     <div class="telemetry_panel">
         <h2>GAMEPAD STATUS</h2>
+        <p>Connect gamepad and move left joystick.</p>
         <pre id="telemetry_display">{ Waiting for input... }</pre>
     </div>
     
-    <img id="dynamic_image" src="imgs/img1.jpg" alt="Direction indicator" width="120">
-
-    <div id="touch_panel" class="control-pad" style="display: none;">
-        <div class="btn" id="btn-up" ontouchstart="send_touch(0, -0.7)" ontouchend="send_touch(0, 0)" onmousedown="send_touch(0, -0.7)" onmouseup="send_touch(0, 0)">▲</div>
-        <div class="btn" id="btn-left" ontouchstart="send_touch(-0.6, 0)" ontouchend="send_touch(0, 0)" onmousedown="send_touch(-0.6, 0)" onmouseup="send_touch(0, 0)">◀</div>
-        <div class="btn" id="btn-stop" onclick="send_touch(0, 0)">STOP</div>
-        <div class="btn" id="btn-right" ontouchstart="send_touch(0.6, 0)" ontouchend="send_touch(0, 0)" onmousedown="send_touch(0.6, 0)" onmouseup="send_touch(0, 0)">▶</div>
-        <div class="btn" id="btn-down" ontouchstart="send_touch(0, 0.7)" ontouchend="send_touch(0, 0)" onmousedown="send_touch(0, 0.7)" onmouseup="send_touch(0, 0)">▼</div>
-    </div>
+    <img id="dynamic_image" src="imgs/img1.jpg" alt="Direction indicator" width="150">
 
     <script>
-        const API_URL = "/api/mover"; // Ruta relativa inteligente
+        // CONSTANTS
+        const API_URL = "http://192.168.1.50:8000/api/mover";
         const IMAGE_FOLDER = "imgs/";
         const REFRESH_RATE_MS = 100;
-
-        // Variables para evitar el spam
-        let last_sent_x = 0.0;
-        let last_sent_y = 0.0;
 
         function update_telemetry_image(axis_x, axis_y) {
             const image_element = document.getElementById("dynamic_image");
             let image_name = "center.jpg";
 
-            if (axis_y <= -0.1 && axis_y >= -1.0) { image_name = "img1.jpg"; } 
-            else if (axis_y >= 0.1 && axis_y <= 1.0) { image_name = "img2.jpg"; } 
-            else if (axis_x >= 0.1 && axis_x <= 1.0) { image_name = "img3.jpg"; } 
-            else if (axis_x <= -0.1 && axis_x >= -1.0) { image_name = "img4.jpg"; }
+            // Y-axis logic (Up/Down)
+            if (axis_y <= -0.1 && axis_y >= -1.0) {
+                image_name = "img1.jpg";
+            } else if (axis_y >= 0.1 && axis_y <= 1.0) {
+                image_name = "img2.jpg";
+            } 
+            // X-axis logic (Left/Right)
+            else if (axis_x >= 0.1 && axis_x <= 1.0) {
+                image_name = "img3.jpg";
+            } else if (axis_x <= -0.1 && axis_x >= -1.0) {
+                image_name = "img4.jpg";
+            }
 
+            // Update DOM only if the image changed
             if (!image_element.src.includes(image_name)) {
                 image_element.src = IMAGE_FOLDER + image_name;
             }
         }
 
-        // Envía los datos al backend aplicando un filtro para no saturar
-        function send_data_to_backend(axis_x, axis_y) {
-            // Si el cambio es minúsculo, ignoramos para no saturar la red
-            const umbral_cambio = 0.05;
-            if (Math.abs(axis_x - last_sent_x) < umbral_cambio && Math.abs(axis_y - last_sent_y) < umbral_cambio) {
-                return; 
-            }
-
-            last_sent_x = axis_x;
-            last_sent_y = axis_y;
-
-            fetch(API_URL, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ axis_x: axis_x, axis_y: axis_y })
-            }).catch(err => console.log("Raspberry desconectada..."));
-        }
-
-        // Función para los botones en pantalla del cel
-        function send_touch(x, y) {
-            document.getElementById("telemetry_display").innerText = JSON.stringify({ mode: "Touch Activo", axis_x: x, axis_y: y }, null, 2);
-            update_telemetry_image(x, y);
-            send_data_to_backend(x, y);
-        }
-
         function read_and_send_data() {
             const gamepads = navigator.getGamepads();
             const main_gamepad = gamepads[0];
-            const touch_panel = document.getElementById("touch_panel");
 
             if (main_gamepad) {
-                // Si hay control, escondemos los botones táctiles y leemos el joystick
-                touch_panel.style.display = "none";
-                
                 const joystick_data = {
                     axis_x: parseFloat(main_gamepad.axes[0].toFixed(2)), 
                     axis_y: parseFloat(main_gamepad.axes[1].toFixed(2))
                 };
 
                 document.getElementById("telemetry_display").innerText = JSON.stringify(joystick_data, null, 2);
+
                 update_telemetry_image(joystick_data.axis_x, joystick_data.axis_y);
-                send_data_to_backend(joystick_data.axis_x, joystick_data.axis_y);
-            } else {
-                // Si NO hay control, mostramos los botones táctiles en la pantalla
-                if (touch_panel.style.display === "none" && last_sent_x === 0 && last_sent_y === 0) {
-                    touch_panel.style.display = "grid";
-                    document.getElementById("telemetry_display").innerText = "{ No Gamepad: Modo Tactil Celular }";
-                }
+
+                fetch(API_URL, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify(joystick_data)
+                }).catch(connection_error => console.log("Waiting for Raspberry Pi connection..."));
             }
         }
 
+        // Main execution loop
         setInterval(read_and_send_data, REFRESH_RATE_MS);
     </script>
 </body>
