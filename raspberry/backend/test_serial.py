@@ -2,7 +2,7 @@ import serial
 import time
 
 # Intentemos con USB0 que es el estándar para ESP32
-PUERTO = '/dev/ttyUSB0' 
+PUERTO = '/dev/ttyACM0' 
 BAUDIOS = 115200
 
 print(f"Abriendo puerto {PUERTO}...")
