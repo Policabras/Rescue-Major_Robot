@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>ESP32 Telemetry Dashboard</title>
+    <title>Wireless WebSocket Telemetry</title>
     <style>
         body {
             background-color: #0d0d12;
@@ -15,118 +15,126 @@
             height: 100vh;
             margin: 0;
         }
-        .telemetry_panel {
+        .panel {
             border: 1px solid #00ffcc;
             padding: 20px;
             border-radius: 8px;
             box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
             text-align: center;
-            margin-bottom: 20px;
+            width: 350px;
         }
         pre {
             text-align: left;
             font-size: 1.2rem;
             color: #ffffff;
-            text-shadow: 0 0 5px rgba(255, 255, 255, 0.5);
+            background: #161622;
+            padding: 10px;
+            border-radius: 4px;
         }
         #dynamic_image {
             border: 2px solid #00ffcc;
             border-radius: 10px;
-            box-shadow: 0 0 20px rgba(0, 255, 204, 0.4);
+            margin-top: 20px;
         }
     </style>
 </head>
 <body>
 
-    <div class="telemetry_panel">
-        <h2>GAMEPAD STATUS</h2>
-        <p>Connect gamepad and move left joystick or use WASD keys.</p>
-        <pre id="telemetry_display">{ Waiting for input... }</pre>
+    <div class="panel">
+        <h2 id="status">CONECTANDO AL ROBOT...</h2>
+        <pre id="telemetry">{ Esperando datos del mando... }</pre>
     </div>
     
-    <img id="dynamic_image" src="imgs/center.jpg" alt="Direction indicator" width="150">
+    <img id="dynamic_image" src="imgs/center.jpg" alt="Status" width="150">
 
     <script>
-        // CONSTANTS
-        // En tu frontend/index.html cambia esta línea:
-        const API_URL = "http://192.168.100.13:8000/api/mover"; // Cambia esta IP por la de tu Raspberry Pi
+        // Truco para detectar la IP automáticamente
+        const WS_URL = "ws://" + window.location.host + "/robot";
         const IMAGE_FOLDER = "imgs/";
-        const REFRESH_RATE_MS = 200;
+        const MAX_VEL = 150;
+        const ZONA_MUERTA = 0.15;
 
-        // Variables para simular el joystick cuando no hay control físico
-        let sim_x = 0.0;
-        let sim_y = 0.0;
+        let socket = null;
 
-        // Escuchamos las teclas del teclado
-        const keys = { w: false, a: false, s: false, d: false };
-        window.addEventListener("keydown", (e) => { if (e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = true; });
-        window.addEventListener("keyup", (e) => { if (e.key.toLowerCase() in keys) keys[e.key.toLowerCase()] = false; });
+        function conectarWebSocket() {
+            socket = new WebSocket(WS_URL);
 
-        function update_telemetry_image(axis_x, axis_y) {
-            const image_element = document.getElementById("dynamic_image");
-            let image_name = "center.jpg";
+            socket.onopen = () => {
+                document.getElementById("status").innerText = "MANDO PS4 -> ALTA VELOCIDAD";
+                console.log("¡Conectado por WebSocket!");
+                bucleControl();
+            };
 
-            // Lógica del eje Y (Adelante/Atrás)
-            if (axis_y <= -0.1 && axis_y >= -1.0) {
-                image_name = "img1.jpg";
-            } else if (axis_y >= 0.1 && axis_y <= 1.0) {
-                image_name = "img2.jpg";
-            } 
-            // Lógica del eje X (Izquierda/Derecha)
-            else if (axis_x >= 0.1 && axis_x <= 1.0) {
-                image_name = "img3.jpg";
-            } else if (axis_x <= -0.1 && axis_x >= -1.0) {
-                image_name = "img4.jpg";
-            }
-
-            // Actualiza el DOM solo si la imagen cambió
-            if (!image_element.src.includes(image_name)) {
-                image_element.src = IMAGE_FOLDER + image_name;
-            }
+            socket.onclose = () => {
+                document.getElementById("status").innerText = "CONEXIÓN PERDIDA";
+                setTimeout(conectarWebSocket, 2000); // Auto-reconexión
+            };
         }
 
-        function read_and_send_data() {
+        function bucleControl() {
+            if (socket.readyState !== WebSocket.OPEN) return;
+
             const gamepads = navigator.getGamepads();
-            const main_gamepad = gamepads[0];
-            let joystick_data = { axis_x: 0.0, axis_y: 0.0 };
+            const gp = gamepads[0]; // Primer control detectado por el navegador
 
-            if (main_gamepad) {
-                // --- MODO REAL: Usando el mando ---
-                joystick_data.axis_x = parseFloat(main_gamepad.axes[0].toFixed(2));
-                joystick_data.axis_y = parseFloat(main_gamepad.axes[1].toFixed(2));
-                document.querySelector(".telemetry_panel h2").innerText = "GAMEPAD STATUS (CONNECTED)";
+            if (gp) {
+                // Mapeo nativo del navegador para PS4/Xbox:
+                // axes[0] = Joystick Izquierdo X (Giro)
+                // buttons[6] = Gatillo L2 (Reversa)
+                // buttons[7] = Gatillo R2 (Avance)
+                let steer = gp.axes[0];
+                let reversa = gp.buttons[6].value; 
+                let avance = gp.buttons[7].value;   
+
+                if (Math.abs(steer) < ZONA_MUERTA) steer = 0;
+
+                let throttle = (avance - reversa) * MAX_VEL;
+                let giro = steer * MAX_VEL;
+
+                // Mezcla diferencial
+                let rpm_izq = throttle + giro;
+                let rpm_der = throttle - giro;
+
+                // Escalamiento Proporcional (El cálculo para no perder dirección)
+                let max_actual = Math.max(Math.abs(rpm_izq), Math.abs(rpm_der));
+                if (max_actual > MAX_VEL) {
+                    rpm_izq = (rpm_izq / max_actual) * MAX_VEL;
+                    rpm_der = (rpm_der / max_actual) * MAX_VEL;
+                }
+
+                // Mostrar datos en el cuadro
+                document.getElementById("telemetry").innerText = JSON.stringify({
+                    "Gatillos_T": parseInt(throttle),
+                    "Joystick_G": parseInt(giro),
+                    "Motor_Izq": parseInt(rpm_izq),
+                    "Motor_Der": parseInt(rpm_der)
+                }, null, 2);
+
+                actualizarImagen(throttle, giro);
+
+                // Enviar por el WebSocket
+                socket.send(JSON.stringify({
+                    izq: parseInt(rpm_izq),
+                    der: parseInt(rpm_der)
+                }));
             } else {
-                // --- MODO SIMULADOR: Si no hay mando, usamos WASD ---
-                document.querySelector(".telemetry_panel h2").innerText = "GAMEPAD STATUS (SIMULATOR MODE - USE WASD)";
-                
-                if (keys.w) sim_y = -1.0;
-                else if (keys.s) sim_y = 1.0;
-                else sim_y = 0.0;
-
-                if (keys.a) sim_x = -1.0;
-                else if (keys.d) sim_x = 1.0;
-                else sim_x = 0.0;
-
-                joystick_data.axis_x = sim_x;
-                joystick_data.axis_y = sim_y;
+                document.getElementById("telemetry").innerText = "{ Mueve un joystick para activar el mando }";
             }
 
-            // Mostrar telemetría en pantalla
-            document.getElementById("telemetry_display").innerText = JSON.stringify(joystick_data, null, 2);
-            update_telemetry_image(joystick_data.axis_x, joystick_data.axis_y);
-
-            // Enviar datos JSON a la Raspberry Pi
-            fetch(API_URL, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json"
-                },
-                body: JSON.stringify(joystick_data)
-            }).catch(connection_error => console.log("Esperando conexión con la Raspberry Pi en " + API_URL));
+            requestAnimationFrame(bucleControl);
         }
 
-        // Bucle de ejecución principal
-        setInterval(read_and_send_data, REFRESH_RATE_MS);
+        function actualizarImagen(throttle, giro) {
+            const img = document.getElementById("dynamic_image");
+            // Ojo con las mayúsculas/minúsculas de tus archivos reales (.jpg)
+            if (throttle === 0 && giro === 0) img.src = IMAGE_FOLDER + "center.jpg";
+            else if (throttle > 0 && Math.abs(giro) < 40) img.src = IMAGE_FOLDER + "forward.jpg";
+            else if (throttle < 0 && Math.abs(giro) < 40) img.src = IMAGE_FOLDER + "backward.jpg";
+            else if (giro > 40) img.src = IMAGE_FOLDER + "right.jpg";
+            else if (giro < -40) img.src = IMAGE_FOLDER + "left.jpg";
+        }
+
+        conectarWebSocket();
     </script>
 </body>
 </html>
