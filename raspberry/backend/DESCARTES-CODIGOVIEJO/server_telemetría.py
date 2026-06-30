@@ -9,7 +9,7 @@ import sys
 app = Flask(__name__)
 CORS(app)
 
-# Diccionario global para guardar lo que está pasando en el taller
+# Diccionario global para guardar el estado del robot en tiempo real
 estado_robot = {
     "throttle": 0,
     "giro": 0,
@@ -48,24 +48,39 @@ def bucle_mando():
     while True:
         pygame.event.pump()
 
-        # Leer ejes (Mapeo DS4Windows)
+        # Leer ejes del control de PS4
         steer = mando.get_axis(0)
         l2_raw = mando.get_axis(4)
         r2_raw = mando.get_axis(5)
 
+        # Normalizar gatillos de -1/1 a rango 0/1
         reversa = (l2_raw + 1) / 2.0
         avance = (r2_raw + 1) / 2.0
 
         if abs(steer) < ZONA_MUERTA:
             steer = 0.0
 
+        # Entradas base calculadas
         throttle = (avance - reversa) * MAX_VEL
         giro = steer * MAX_VEL
 
-        rpm_izq = int(max(-MAX_VEL, min(MAX_VEL, throttle + giro)))
-        rpm_der = int(max(-MAX_VEL, min(MAX_VEL, throttle - giro)))
+        # 1. Mezcla diferencial cruda (suma y resta básica)
+        rpm_izq = throttle + giro
+        rpm_der = throttle - giro
 
-        # Actualizar la vitrina global para la página web
+        # 2. EL CÁLCULO PROPORCIONAL (Evita que la dirección se congele a alta velocidad)
+        max_actual = max(abs(rpm_izq), abs(rpm_der))
+        
+        if max_actual > MAX_VEL:
+            # Si alguna rueda se pasa de 150, castigamos proporcionalmente a AMBAS ruedas
+            rpm_izq = (rpm_izq / max_actual) * MAX_VEL
+            rpm_der = (rpm_der / max_actual) * MAX_VEL
+
+        # 3. Convertir a enteros finales para limpieza de datos
+        rpm_izq = int(rpm_izq)
+        rpm_der = int(rpm_der)
+
+        # Actualizar la vitrina global para que la vea index.html
         estado_robot = {
             "throttle": int(throttle),
             "giro": int(giro),
@@ -73,23 +88,22 @@ def bucle_mando():
             "rpm_der": rpm_der
         }
 
-        # Mandar a la ESP32
+        # Mandar a la ESP32 de forma limpia por el puerto serial
         if ser and ser.is_open:
             comando = f"v,{rpm_izq},{rpm_der}\n"
             ser.write(comando.encode('utf-8'))
 
-        time.sleep(0.02) # 50Hz constantes
+        time.sleep(0.02) # Frecuencia fija de 50Hz
 
-# --- RUTA PARA QUE LA PÁGINA WEB VEA LA TELEMETRÍA ---
+# --- RUTA DE LA API ---
 @app.route('/api/status', methods=['GET'])
 def obtener_status():
     return jsonify(estado_robot)
 
 if __name__ == '__main__':
-    # Arrancamos la lectura del mando en un hilo separado antes de encender Flask
+    # Arrancamos el hilo del mando en segundo plano
     hilo = threading.Thread(target=bucle_mando, daemon=True)
     hilo.start()
 
-    # Encendemos el servidor web local para el frontend
     print("[*] Arrancando servidor de telemetría...")
     app.run(host='0.0.0.0', port=8000, debug=True, use_reloader=False)
