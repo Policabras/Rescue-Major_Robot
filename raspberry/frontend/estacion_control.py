@@ -18,7 +18,7 @@ BAUD_RATE = 115200
 try:
     ser = serial.Serial(PORT, BAUD_RATE, timeout=0.1)
     print(f"[*] [SERIAL] ¡Conectado exitosamente a la ESP32 en: {PORT}!")
- except Exception as e:
+except Exception as e:
     print(f"[!] [SERIAL] No se detectó la ESP32 en {PORT}. Intentando puerto alternativo...")
     try:
         PORT = '/dev/ttyUSB0'
@@ -58,5 +58,4 @@ if __name__ == '__main__':
     print("[*] Servidor de Robótica Activo en la Raspberry Pi")
     print("========================================================")
     
-    # Eliminamos el Timer estorboso. Solo corremos el servidor puro.
     app.run(host='0.0.0.0', port=8000, debug=False)
