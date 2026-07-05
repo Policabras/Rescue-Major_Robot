@@ -48,14 +48,14 @@
     <img id="dynamic_image" src="imgs/center.jpg" alt="Status" width="150">
 
     <script>
-        // Truco para detectar la IP automáticamente
         const WS_URL = "ws://" + window.location.host + "/robot";
         const IMAGE_FOLDER = "imgs/";
-        // CALIBRACION
         const MAX_VEL = 150;
         const ZONA_MUERTA = 0.15;
 
         let socket = null;
+        let ultimoEnvioWS = 0; 
+        const INTERVALO_WS_MS = 30; // Controla la tasa de envío (~33 Hz)
 
         function conectarWebSocket() {
             socket = new WebSocket(WS_URL);
@@ -68,7 +68,7 @@
 
             socket.onclose = () => {
                 document.getElementById("status").innerText = "CONEXIÓN PERDIDA";
-                setTimeout(conectarWebSocket, 2000); // Auto-reconexión
+                setTimeout(conectarWebSocket, 2000);
             };
         }
 
@@ -76,13 +76,9 @@
             if (socket.readyState !== WebSocket.OPEN) return;
 
             const gamepads = navigator.getGamepads();
-            const gp = gamepads[0]; // Primer control detectado por el navegador
+            const gp = gamepads[0]; 
 
             if (gp) {
-                // Mapeo nativo del navegador para PS4/Xbox:
-                // axes[0] = Joystick Izquierdo X (Giro)
-                // buttons[6] = Gatillo L2 (Reversa)
-                // buttons[7] = Gatillo R2 (Avance)
                 let steer = gp.axes[0];
                 let reversa = gp.buttons[6].value; 
                 let avance = gp.buttons[7].value;   
@@ -96,14 +92,14 @@
                 let rpm_izq = throttle + giro;
                 let rpm_der = throttle - giro;
 
-                // Escalamiento Proporcional (El cálculo para no perder dirección)
+                // Escalamiento Proporcional
                 let max_actual = Math.max(Math.abs(rpm_izq), Math.abs(rpm_der));
                 if (max_actual > MAX_VEL) {
                     rpm_izq = (rpm_izq / max_actual) * MAX_VEL;
                     rpm_der = (rpm_der / max_actual) * MAX_VEL;
                 }
 
-                // Mostrar datos en el cuadro
+                // Render en UI (Corre a los Hz de la pantalla)
                 document.getElementById("telemetry").innerText = JSON.stringify({
                     "Gatillos_T": parseInt(throttle),
                     "Joystick_G": parseInt(giro),
@@ -113,11 +109,16 @@
 
                 actualizarImagen(throttle, giro);
 
-                // Enviar por el WebSocket
-                socket.send(JSON.stringify({
-                    izq: parseInt(rpm_izq),
-                    der: parseInt(rpm_der)
-                }));
+                // --- FILTRO DE VELOCIDAD PARA EL WEBSOCKET ---
+                let tiempoActual = performance.now();
+                if (tiempoActual - ultimoEnvioWS >= INTERVALO_WS_MS) {
+                    ultimoEnvioWS = tiempoActual;
+                    
+                    socket.send(JSON.stringify({
+                        izq: parseInt(rpm_izq),
+                        der: parseInt(rpm_der)
+                    }));
+                }
             } else {
                 document.getElementById("telemetry").innerText = "{ Mueve un joystick para activar el mando }";
             }
@@ -127,7 +128,6 @@
 
         function actualizarImagen(throttle, giro) {
             const img = document.getElementById("dynamic_image");
-            // Ojo con las mayúsculas/minúsculas de tus archivos reales (.jpg)
             if (throttle === 0 && giro === 0) img.src = IMAGE_FOLDER + "center.jpg";
             else if (throttle > 0 && Math.abs(giro) < 40) img.src = IMAGE_FOLDER + "forward.jpg";
             else if (throttle < 0 && Math.abs(giro) < 40) img.src = IMAGE_FOLDER + "backward.jpg";
