@@ -47,18 +47,16 @@
     
     <img id="dynamic_image" src="imgs/center.jpg" alt="Status" width="150">
 
-    <script>
-        // --- REEMPLAZA LA LÍNEA DEL WS_URL CON ESTA ---
+ <script>
         const protocolo = window.location.protocol === "https:" ? "wss://" : "ws://";
         const WS_URL = protocolo + window.location.host + "/robot";
         const IMAGE_FOLDER = "imgs/";
         const MAX_VEL = 150;
         const ZONA_MUERTA = 0.15;
 
-        
         let socket = null;
         let ultimoEnvioWS = 0; 
-        const INTERVALO_WS_MS = 30; // Controla la tasa de envío (~33 Hz)
+        const INTERVALO_WS_MS = 30; // ~33 Hz
 
         function conectarWebSocket() {
             socket = new WebSocket(WS_URL);
@@ -82,44 +80,33 @@
             const gp = gamepads[0]; 
 
             if (gp) {
-                let steer = gp.axes[0];
-                let reversa = gp.buttons[6].value; 
-                let avance = gp.buttons[7].value;   
+                let steer = gp.axes[0]; // Joystick izquierdo (X)
+                let reversa = gp.buttons[6].value; // L2
+                let avance = gp.buttons[7].value;   // R2
 
                 if (Math.abs(steer) < ZONA_MUERTA) steer = 0;
 
+                // Calculamos los valores lineales (v) y angulares (w) puros
                 let throttle = (avance - reversa) * MAX_VEL;
                 let giro = steer * MAX_VEL;
 
-                // Mezcla diferencial
-                let rpm_izq = throttle + giro;
-                let rpm_der = throttle - giro;
-
-                // Escalamiento Proporcional
-                let max_actual = Math.max(Math.abs(rpm_izq), Math.abs(rpm_der));
-                if (max_actual > MAX_VEL) {
-                    rpm_izq = (rpm_izq / max_actual) * MAX_VEL;
-                    rpm_der = (rpm_der / max_actual) * MAX_VEL;
-                }
-
-                // Render en UI (Corre a los Hz de la pantalla)
+                // Render en la interfaz web para telemetría
                 document.getElementById("telemetry").innerText = JSON.stringify({
-                    "Gatillos_T": parseInt(throttle),
-                    "Joystick_G": parseInt(giro),
-                    "Motor_Izq": parseInt(rpm_izq),
-                    "Motor_Der": parseInt(rpm_der)
+                    "Gatillos_V": parseInt(throttle),
+                    "Joystick_W": parseInt(giro)
                 }, null, 2);
 
                 actualizarImagen(throttle, giro);
 
-                // --- FILTRO DE VELOCIDAD PARA EL WEBSOCKET ---
+                // --- ENVIAR DATOS FILTRADOS POR EL WEBSOCKET ---
                 let tiempoActual = performance.now();
                 if (tiempoActual - ultimoEnvioWS >= INTERVALO_WS_MS) {
                     ultimoEnvioWS = tiempoActual;
                     
+                    // MODIFICADO: Mandamos throttle y giro directamente sin mezclar
                     socket.send(JSON.stringify({
-                        izq: parseInt(rpm_izq),
-                        der: parseInt(rpm_der)
+                        izq: parseInt(throttle), // Se recibe en python como v
+                        der: parseInt(giro)     // Se recibe en python como w
                     }));
                 }
             } else {
