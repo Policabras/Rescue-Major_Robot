@@ -4,14 +4,11 @@ import serial
 import serial.tools.list_ports
 import json
 import os
-from pyngrok import ngrok  # <- NUEVO: Para crear el túnel de internet
+from pyngrok import ngrok
 
 CARPETA_ACTUAL = os.path.dirname(os.path.abspath(__file__))
-
-# --- REEMPLAZA LAS LÍNEAS 13-15 CON ESTO ---
 app = Flask(__name__, static_folder=CARPETA_ACTUAL, static_url_path='')
-sock = Sock(app) # Sin el SOCK_SERVER_OPTIONS que genera el choque
-
+sock = Sock(app)
 
 # --- CONFIGURACIÓN SERIAL AUTO-DETECTABLE ---
 BAUD_RATE = 115200
@@ -21,38 +18,51 @@ print("[*] [SERIAL] Buscando la ESP32 en los puertos USB de la Raspberry Pi...")
 puertos = list(serial.tools.list_ports.comports())
 
 for p in puertos:
-    if 'ttyUSB' in p.device or 'ttyACM' in p.device:
+    # Detecta cables USB o el mapeo por pines ttyAMA0 / ttySerial0
+    if 'ttyUSB' in p.device or 'ttyACM' in p.device or 'ttyAMA' in p.device or 'serial0' in p.device:
         try:
             ser = serial.Serial(p.device, BAUD_RATE, timeout=0.05)
-            print(f"[*] [SERIAL] ¡Conectado exitosamente a la ESP32 en: {p.device} ({p.description})!")
+            print(f"[*] [SERIAL] ¡Conectado exitosamente a la ESP32 en: {p.device}!")
             break
         except Exception as e:
-            print(f"[!] [SERIAL] Se encontró {p.device} pero no se pudo abrir: {e}")
+            print(f"[!] [SERIAL] No se pudo abrir {p.device}: {e}")
 
 if ser is None:
-    print(f"[!] [SERIAL] ERROR CRÍTICO: No se detectó ninguna ESP32 conectada. Modo simulación activo.")
+    print(f"[!] [SERIAL] ERROR: No se detectó la ESP32. Modo simulación activo.")
 
-
-# TÚNEL WEBSOCKET
+# CANAL WEBSOCKET (CON INTERNET VÍA NGROK)
 @sock.route('/robot')
 def canal_robot(ws):
-    print("[*] [WEBSOCKET] ¡Mando conectado remotamente al túnel de control!")
+    print("[*] [WEBSOCKET] ¡Mando web conectado vía Túnel Seguro!")
     while True:
         mensaje = ws.receive()
         if not mensaje:
             break
         try:
             datos = json.loads(mensaje)
-            izq = datos.get("izq", 0)
-            der = datos.get("der", 0)
+            
+            # Recibimos los valores brutos mapeados desde el index.html
+            # Mapeamos los rangos de la interfaz web (-150 a 150) al formato esperado (-1000 a 1000)
+            izq_web = datos.get("izq", 0)  # Representa el avance/gatillo (v)
+            der_web = datos.get("der", 0)  # Representa el giro/joystick (w)
+            
+            # Escalamos los valores a la escala de 1000 que usa el nuevo firmware
+            v = int((izq_web / 150.0) * 1000)
+            w = int((der_web / 150.0) * 1000)
+            f = 0  # Flipper / Extra en 0 por ahora
+            
+            # Limitamos por seguridad
+            v = max(-1000, min(1000, v))
+            w = max(-1000, min(1000, w))
             
             if ser and ser.is_open:
-                comando = f"v{int(izq)},{int(der)}\n"
-                ser.write(comando.encode('utf-8'))
+                # NUEVO FORMATO REQUERIDO POR EL FIRMWARE CORRETO
+                paquete = f"<{v},{w},{f}>\n"
+                ser.write(paquete.encode('utf-8'))
+                
         except Exception as e:
             print(f"Error procesando datos: {e}")
 
-# Servir el HTML
 @app.route('/')
 def index():
     return app.send_static_file('index.html')
@@ -61,21 +71,16 @@ if __name__ == '__main__':
     PUERTO_LOCAL = 8000
     
     print("\n========================================================")
-    print("[*] [NGROK] Abriendo túnel hacia el internet exterior...")
+    print("[*] [NGROK] Abriendo túnel seguro hacia el internet...")
     print("========================================================")
     
     try:
-        # Abrimos el túnel HTTP en el puerto 8000 (Soporta HTTP y WebSockets automáticamente)
         tunel_publico = ngrok.connect(PUERTO_LOCAL, bind_tls=True)
-        # Convertimos la URL a un formato limpio
         url_publica = tunel_publico.public_url
-        
         print("\n🚀 ¡ROVER EN LÍNEA DESDE CUALQUIER PARTE DEL MUNDO! 🚀")
-        print(f"🔗 Entra a esta URL desde tu celular o laptop: {url_publica}")
+        print(f"🔗 URL para tu celular/laptop: {url_publica}")
         print("========================================================\n")
     except Exception as e:
-        print(f"[!] [NGROK] Error al iniciar el túnel: {e}")
-        print("[*] Continuando solo en red local...")
+        print(f"[!] [NGROK] Error al iniciar túnel: {e}. Solo red local.")
 
-    # Arrancamos Flask de forma normal
     app.run(host='0.0.0.0', port=PUERTO_LOCAL, debug=False)
