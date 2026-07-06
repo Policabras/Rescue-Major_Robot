@@ -47,7 +47,7 @@
     
     <img id="dynamic_image" src="imgs/center.jpg" alt="Status" width="150">
 
- <script>
+    <script>
         const protocolo = window.location.protocol === "https:" ? "wss://" : "ws://";
         const WS_URL = protocolo + window.location.host + "/robot";
         const IMAGE_FOLDER = "imgs/";
@@ -80,17 +80,17 @@
             const gp = gamepads[0]; 
 
             if (gp) {
-                let steer = gp.axes[0]; // Joystick izquierdo (X)
-                let reversa = gp.buttons[6].value; // L2
-                let avance = gp.buttons[7].value;   // R2
+                let steer = gp.axes[0];            // Joystick izquierdo (X) para dirección
+                let reversa = gp.buttons[6].value;  // L2 para ir hacia atrás
+                let avance = gp.buttons[7].value;   // R2 para ir hacia adelante
 
                 if (Math.abs(steer) < ZONA_MUERTA) steer = 0;
 
-                // Calculamos los valores lineales (v) y angulares (w) puros
+                // Calculamos valores lineales puros
                 let throttle = (avance - reversa) * MAX_VEL;
                 let giro = steer * MAX_VEL;
 
-                // Render en la interfaz web para telemetría
+                // Mostramos en la pantalla web para verificar que los ejes se mueven
                 document.getElementById("telemetry").innerText = JSON.stringify({
                     "Gatillos_V": parseInt(throttle),
                     "Joystick_W": parseInt(giro)
@@ -98,15 +98,14 @@
 
                 actualizarImagen(throttle, giro);
 
-                // --- ENVIAR DATOS FILTRADOS POR EL WEBSOCKET ---
+                // Enviar por el WebSocket con la tasa de refresco controlada
                 let tiempoActual = performance.now();
                 if (tiempoActual - ultimoEnvioWS >= INTERVALO_WS_MS) {
                     ultimoEnvioWS = tiempoActual;
                     
-                    // MODIFICADO: Mandamos throttle y giro directamente sin mezclar
                     socket.send(JSON.stringify({
-                        izq: parseInt(throttle), // Se recibe en python como v
-                        der: parseInt(giro)     // Se recibe en python como w
+                        izq: parseInt(throttle), 
+                        der: parseInt(giro)     
                     }));
                 }
             } else {
