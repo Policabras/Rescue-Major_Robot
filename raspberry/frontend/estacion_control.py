@@ -8,13 +8,10 @@ from pyngrok import ngrok  # <- NUEVO: Para crear el túnel de internet
 
 CARPETA_ACTUAL = os.path.dirname(os.path.abspath(__file__))
 
+# --- REEMPLAZA LAS LÍNEAS 13-15 CON ESTO ---
 app = Flask(__name__, static_folder=CARPETA_ACTUAL, static_url_path='')
+sock = Sock(app) # Sin el SOCK_SERVER_OPTIONS que genera el choque
 
-# --- CONFIGURACIÓN DE SEGURIDAD PARA WEBSOCKETS EN INTERNET ---
-# Por defecto, Flask-Sock bloquea conexiones externas si el host no coincide.
-# Con esto permitimos que el WebSocket funcione a través de cualquier URL de ngrok.
-app.config['SOCK_SERVER_OPTIONS'] = {'ping_interval': 25, 'ping_timeout': 15}
-sock = Sock(app)
 
 # --- CONFIGURACIÓN SERIAL AUTO-DETECTABLE ---
 BAUD_RATE = 115200
