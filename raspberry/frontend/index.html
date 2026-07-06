@@ -48,11 +48,14 @@
     <img id="dynamic_image" src="imgs/center.jpg" alt="Status" width="150">
 
     <script>
-        const WS_URL = "ws://" + window.location.host + "/robot";
+        // --- REEMPLAZA LA LÍNEA DEL WS_URL CON ESTA ---
+        const protocolo = window.location.protocol === "https:" ? "wss://" : "ws://";
+        const WS_URL = protocolo + window.location.host + "/robot";
         const IMAGE_FOLDER = "imgs/";
         const MAX_VEL = 150;
         const ZONA_MUERTA = 0.15;
 
+        
         let socket = null;
         let ultimoEnvioWS = 0; 
         const INTERVALO_WS_MS = 30; // Controla la tasa de envío (~33 Hz)
