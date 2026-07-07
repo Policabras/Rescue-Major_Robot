@@ -79,9 +79,14 @@
         const WS_URL = protocolo + window.location.host + "/robot";
         const IMAGE_FOLDER = "imgs/";
         
-        const MAX_VEL = 1000;         // Escalado al nuevo rango de la ESP32
+        // --- PARÁMETROS DE CONTROL ---
+        const MAX_VEL = 1000;         // Escalado al rango de la ESP32
         const ZONA_MUERTA = 0.15;     // Ignora ruidos pequeños de las palancas
         const GIRO_THRESH = 250;      // Umbral para cambiar las fotos de dirección
+        
+        // --- PERILLA DE SENSIBILIDAD ---
+        // 1.0 = Lineal (Pateón agresivo), 2.0 = Suave/Preciso, 3.0 = Ultra cirujano
+        const EXPO_SUAVIZADO = 2.0;   
 
         let socket = null;
         let ultimoEnvioWS = 0; 
@@ -96,7 +101,7 @@
                 bucleControl();
             };
 
-            // ESCUCHAR TELEMETRÍA DE BATERÍA ENVIADA POR LA PI
+            // Escuchar telemetría de batería enviada por la Pi
             socket.onmessage = (event) => {
                 try {
                     const datosWeb = JSON.parse(event.data);
@@ -108,7 +113,6 @@
                         document.getElementById("bat_percent").innerText = porcentaje;
                         document.getElementById("bat_volts").innerText = volts;
                         
-                        // Si la batería baja de 20%, el panel parpadea en rojo
                         const batBox = document.getElementById("bat_box");
                         if (porcentaje <= 20) {
                             batBox.classList.add("low-battery");
@@ -123,29 +127,37 @@
 
             socket.onclose = () => {
                 document.getElementById("status").innerText = "CONEXIÓN PERDIDA";
-                setTimeout(conectarWebSocket, 2000); // Reintento automático
+                setTimeout(conectarWebSocket, 2000);
             };
         }
 
         function bucleControl() {
             if (socket.readyState !== WebSocket.OPEN) return;
 
-            // BUSCADOR DE CONTROL: Busca un gamepad activo en cualquier índice disponible
+            // Buscador dinámico de mandos en cualquier ranura del navegador
             const gamepads = navigator.getGamepads();
             const gp = Array.from(gamepads).find(g => g !== null); 
 
             if (gp) {
-                let steer = gp.axes[0];            // Stick izquierdo X
+                let steer = gp.axes[0];            // Stick izquierdo X (Dirección)
                 let reversa = gp.buttons[6].value;  // Gatillo L2 (0.0 a 1.0)
                 let avance = gp.buttons[7].value;   // Gatillo R2 (0.0 a 1.0)
 
                 if (Math.abs(steer) < ZONA_MUERTA) steer = 0;
 
-                // Mapeo directo a escala 1000
-                let throttle = (avance - reversa) * MAX_VEL;
-                let giro = steer * MAX_VEL;
+                // --- ALGORITMO EXPONENCIAL DE SENSIBILIDAD ---
+                // Aplica una curva al giro manteniendo el signo (+ o -)
+                let giroSuave = Math.sign(steer) * Math.pow(Math.abs(steer), EXPO_SUAVIZADO);
 
-                // Verificación visual en la página web
+                // Aplica una curva al avance/reversa combinado
+                let avanceFrenado = avance - reversa; 
+                let throttleSuave = Math.sign(avanceFrenado) * Math.pow(Math.abs(avanceFrenado), EXPO_SUAVIZADO);
+
+                // Escalamos a los límites de velocidad finales
+                let throttle = throttleSuave * MAX_VEL;
+                let giro = giroSuave * MAX_VEL;
+
+                // Verificación de datos en la pantalla
                 document.getElementById("telemetry").innerText = JSON.stringify({
                     "Control_Activo": gp.id,
                     "Gatillo_V": parseInt(throttle),
@@ -154,19 +166,17 @@
 
                 actualizarImagen(throttle, giro);
 
-                // Controlar flujo de datos hacia Ngrok
+                // Envío controlado hacia Ngrok
                 let tiempoActual = performance.now();
                 if (tiempoActual - ultimoEnvioWS >= INTERVALO_WS_MS) {
                     ultimoEnvioWS = tiempoActual;
                     
-                    // Enviar datos en el JSON limpio que espera Python
                     socket.send(JSON.stringify({
                         v: parseInt(throttle), 
                         w: parseInt(giro)     
                     }));
                 }
             } else {
-                // Alerta si el navegador tiene "dormido" el control
                 document.getElementById("telemetry").innerText = "{ Presiona un botón en el mando para activarlo }";
             }
 
@@ -188,7 +198,6 @@
             }
         }
 
-        // Encendido inicial
         conectarWebSocket();
     </script>
 </body>
