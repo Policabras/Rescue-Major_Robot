@@ -79,25 +79,24 @@
         const WS_URL = protocolo + window.location.host + "/robot";
         const IMAGE_FOLDER = "imgs/";
         
-        // --- NUEVOS PARÁMETROS CONFIGURADOS ---
-        const MAX_VEL = 1000;         // Escalado al nuevo rango de la ESP32 (-1000 a 1000)
-        const ZONA_MUERTA = 0.15;     // Umbral para ignorar ruidos en el stick
-        const GIRO_THRESH = 250;      // Umbral adaptado a 1000 para cambiar la foto de dirección
+        const MAX_VEL = 1000;         // Escalado al nuevo rango de la ESP32
+        const ZONA_MUERTA = 0.15;     // Ignora ruidos pequeños de las palancas
+        const GIRO_THRESH = 250;      // Umbral para cambiar las fotos de dirección
 
         let socket = null;
         let ultimoEnvioWS = 0; 
-        const INTERVALO_WS_MS = 30; // Envío controlado a ~33 Hz
+        const INTERVALO_WS_MS = 30;   // Frecuencia de envío (~33 Hz)
 
         function conectarWebSocket() {
             socket = new WebSocket(WS_URL);
 
             socket.onopen = () => {
                 document.getElementById("status").innerText = "MANDO EN LÍNEA (NGROK)";
-                console.log("¡Conectado al servidor WebSocket!");
+                console.log("¡Conexión establecida con la Raspberry!");
                 bucleControl();
             };
 
-            // RECEPTOR DE TELEMETRÍA (Escucha a la Raspberry Pi)
+            // ESCUCHAR TELEMETRÍA DE BATERÍA ENVIADA POR LA PI
             socket.onmessage = (event) => {
                 try {
                     const datosWeb = JSON.parse(event.data);
@@ -109,7 +108,7 @@
                         document.getElementById("bat_percent").innerText = porcentaje;
                         document.getElementById("bat_volts").innerText = volts;
                         
-                        // Alerta visual si la LiPo 4S baja de zona segura
+                        // Si la batería baja de 20%, el panel parpadea en rojo
                         const batBox = document.getElementById("bat_box");
                         if (porcentaje <= 20) {
                             batBox.classList.add("low-battery");
@@ -118,21 +117,22 @@
                         }
                     }
                 } catch (e) {
-                    console.error("Error al procesar telemetría entrante:", e);
+                    console.error("Error leyendo telemetría:", e);
                 }
             };
 
             socket.onclose = () => {
                 document.getElementById("status").innerText = "CONEXIÓN PERDIDA";
-                setTimeout(conectarWebSocket, 2000); // Auto-reconexión automática
+                setTimeout(conectarWebSocket, 2000); // Reintento automático
             };
         }
 
         function bucleControl() {
             if (socket.readyState !== WebSocket.OPEN) return;
 
+            // BUSCADOR DE CONTROL: Busca un gamepad activo en cualquier índice disponible
             const gamepads = navigator.getGamepads();
-            const gp = gamepads[0]; 
+            const gp = Array.from(gamepads).find(g => g !== null); 
 
             if (gp) {
                 let steer = gp.axes[0];            // Stick izquierdo X
@@ -141,31 +141,33 @@
 
                 if (Math.abs(steer) < ZONA_MUERTA) steer = 0;
 
-                // Cálculo lineal puro directo en escala de 1000
+                // Mapeo directo a escala 1000
                 let throttle = (avance - reversa) * MAX_VEL;
                 let giro = steer * MAX_VEL;
 
-                // Debug local en pantalla
+                // Verificación visual en la página web
                 document.getElementById("telemetry").innerText = JSON.stringify({
+                    "Control_Activo": gp.id,
                     "Gatillo_V": parseInt(throttle),
                     "Joystick_W": parseInt(giro)
                 }, null, 2);
 
                 actualizarImagen(throttle, giro);
 
-                // Control de tráfico por el túnel de Ngrok
+                // Controlar flujo de datos hacia Ngrok
                 let tiempoActual = performance.now();
                 if (tiempoActual - ultimoEnvioWS >= INTERVALO_WS_MS) {
                     ultimoEnvioWS = tiempoActual;
                     
-                    // Formato JSON limpio emparejado con estacion_control.py
+                    // Enviar datos en el JSON limpio que espera Python
                     socket.send(JSON.stringify({
                         v: parseInt(throttle), 
                         w: parseInt(giro)     
                     }));
                 }
             } else {
-                document.getElementById("telemetry").innerText = "{ Mueve un stick para activar el mando }";
+                // Alerta si el navegador tiene "dormido" el control
+                document.getElementById("telemetry").innerText = "{ Presiona un botón en el mando para activarlo }";
             }
 
             requestAnimationFrame(bucleControl);
@@ -186,7 +188,7 @@
             }
         }
 
-        // Fuego inicial
+        // Encendido inicial
         conectarWebSocket();
     </script>
 </body>
