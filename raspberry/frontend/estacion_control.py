@@ -30,7 +30,7 @@ ser = None
 clientes_conectados = set()
 
 # =========================================================
-# CONFIGURACIÓN DE HARDWARE (SERIAL Y CÁMARA)
+# CONEXIÓN SERIAL INTERNA (A ESP32)
 # =========================================================
 try:
     ser = serial.Serial(UART_PORT, UART_BAUD, timeout=0.1)
@@ -43,18 +43,43 @@ except Exception as e:
     except Exception as err:
         print(f"[!] [SERIAL] Modo simulación activo (Motores en pausa).")
 
-# Inicializamos la cámara globalmente para OpenCV
-cap = cv2.VideoCapture(0)
-cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+# =========================================================
+# ESCÁNER INTELIGENTE DE CÁMARA (EVITA PUERTOS FANTASMA)
+# =========================================================
+def inicializar_camara_inteligente():
+    # Probamos los índices más comunes en Raspberry Pi (2 y 4 suelen ser webcams USB)
+    for index in [2, 4, 0, 1, 6]:
+        print(f"[*] [CÁMARA] Probando disponibilidad en índice {index}...")
+        test_cap = cv2.VideoCapture(index)
+        if test_cap.isOpened():
+            ret, frame = test_cap.read()
+            if ret and frame is not None:
+                print(f"✨ [CÁMARA] ¡Webcam USB detectada con éxito en /dev/video{index}!")
+                test_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+                test_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+                return test_cap
+        test_cap.release()
+    
+    print("[!] [CÁMARA] No se detectó ninguna webcam activa. Usando modo simulación gráfica.")
+    return cv2.VideoCapture(0)
 
-# Inicializamos el micrófono de la cámara web vía ALSA
+cap = inicializar_camara_inteligente()
+
+# =========================================================
+# ESCÁNER INTELIGENTE DE MICRÓFONO (EVITA ERRORES ALSA)
+# =========================================================
 audio_player = None
-try:
-    audio_player = MediaPlayer("default", format="alsa")
-    print("[*] [WEBRTC] Micrófono ALSA inicializado correctamente.")
-except Exception as e:
-    print(f"[!] [WEBRTC] No se detectó micrófono de hardware: {e}")
+# 'hw:1' y 'hw:2' apuntan directo a tarjetas de sonido externas (como la webcam USB)
+for dispositivo_audio in ["hw:1", "hw:2", "default"]:
+    try:
+        audio_player = MediaPlayer(dispositivo_audio, format="alsa")
+        print(f"🎤 [WEBRTC] Micrófono USB enganchado correctamente en: {dispositivo_audio}")
+        break
+    except Exception:
+        audio_player = None
+
+if not audio_player:
+    print("[⚠️] [WEBRTC] No se detectó micrófono de hardware compatible. Transmisión solo de video activa.")
 
 # =========================================================
 # CLASE: TRACK DE VIDEO PERSONALIZADO DE OPENCV
@@ -68,30 +93,24 @@ class OpenCVVideoTrack(MediaStreamTrack):
     async def recv(self):
         pts, time_base = await self.next_timestamp()
         
-        # Leemos la cámara en un ejecutor para no congelar el flujo asíncrono
         loop = asyncio.get_event_loop()
         ret, frame = await loop.run_in_executor(None, cap.read)
         
         if not ret or frame is None:
-            # Cuadro negro de respaldo si se desconecta la cámara física
             import numpy as np
             frame = np.zeros((480, 640, 3), dtype=np.uint8)
-            cv2.putText(frame, "CAMARA DESCONECTADA", (140, 240), 
+            cv2.putText(frame, "ERROR DE CAPTURA", (180, 240), 
                         cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
         else:
-            # Convertimos de BGR (OpenCV) a RGB (WebRTC)
             frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            
-            # [AQUÍ IRÁ TU PROCESAMIENTO DE QR O IA EN EL FUTURO]
 
-        # Empaquetamos el cuadro para enviarlo por internet
         video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
         video_frame.pts = pts
         video_frame.time_base = time_base
         return video_frame
 
 # =========================================================
-# HILO ASÍNCRONO PARA WEBRTC (Evita congelar Flask)
+# HILO ASÍNCRONO PARA WEBRTC
 # =========================================================
 rtc_loop = asyncio.new_event_loop()
 def correr_bucle_webrtc(loop):
@@ -111,16 +130,15 @@ async def procesar_signaling_webrtc(offer_dict):
         if pc.connectionState in ["failed", "closed"]:
             await pc.close()
             pcs.discard(pc)
-            print("[*] [WEBRTC] Conexión multimedia cerrada.")
+            print("[*] [WEBRTC] Conexión multimedia finalizada.")
 
-    # Inyectamos el video de OpenCV
+    # Inyectar la pista de video de OpenCV
     pc.addTrack(OpenCVVideoTrack())
 
-    # Inyectamos el audio del micrófono (si está disponible)
+    # Inyectar la pista de audio si el micrófono se abrió con éxito
     if audio_player and audio_player.audio:
         pc.addTrack(audio_player.audio)
 
-    # Configuración de oferta y respuesta SDP
     offer = RTCSessionDescription(sdp=offer_dict["sdp"], type=offer_dict["type"])
     await pc.setRemoteDescription(offer)
     answer = await pc.createAnswer()
@@ -128,7 +146,6 @@ async def procesar_signaling_webrtc(offer_dict):
 
     return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
 
-# Ruta HTTP POST para negociar el video
 @app.route('/offer', methods=['POST'])
 def handle_offer():
     datos_oferta = request.get_json()
@@ -137,7 +154,7 @@ def handle_offer():
     return jsonify(respuesta_sdp)
 
 # =========================================================
-# TELEMETRÍA DE BATERÍA Y MANDOS (IGUAL QUE ANTES)
+# MANEJO DE BATERÍA Y MANDOS POR WEBSOCKET
 # =========================================================
 def escuchar_esp32_bateria():
     while True:
@@ -162,7 +179,7 @@ threading.Thread(target=escuchar_esp32_bateria, daemon=True).start()
 
 @sock.route('/robot')
 def canal_robot(ws):
-    print("[*] [WEBSOCKET] ¡Mando en línea detectado por el túnel!")
+    print("[*] [WEBSOCKET] Mando en línea detectado.")
     clientes_conectados.add(ws)
     paquetes_recibidos = 0
     try:
