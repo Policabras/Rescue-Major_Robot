@@ -12,8 +12,21 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        /* --- NUEVO REPRODUCTOR DE VIDEO WEBRTC --- */
+        #robot_feed {
+            width: 440px;
+            height: 330px;
+            background-color: #11111b;
+            border: 2px solid #00ffcc;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 0 20px rgba(0, 255, 204, 0.15);
+            object-fit: cover;
         }
         .panel {
             border: 1px solid #00ffcc;
@@ -31,7 +44,6 @@
             border-radius: 4px;
             font-size: 1.1rem;
             font-weight: bold;
-            transition: all 0.3s ease;
         }
         .low-battery {
             border-color: #ff3333 !important;
@@ -62,6 +74,8 @@
 </head>
 <body>
 
+    <video id="robot_feed" autoplay playsinline muted></video>
+
     <div class="panel">
         <h2 id="status">CONECTANDO AL ROBOT...</h2>
         
@@ -72,57 +86,90 @@
         <pre id="telemetry">{ Esperando datos del mando... }</pre>
     </div>
     
-    <img id="dynamic_image" src="imgs/center.jpg" alt="Status" width="150">
+    <img id="dynamic_image" src="imgs/center.jpg" alt="Status" width="120">
 
     <script>
         const protocolo = window.location.protocol === "https:" ? "wss://" : "ws://";
         const WS_URL = protocolo + window.location.host + "/robot";
         const IMAGE_FOLDER = "imgs/";
         
-        // --- PARÁMETROS DE CONTROL ---
-        const MAX_VEL = 1000;         // Escalado al rango de la ESP32
-        const ZONA_MUERTA = 0.15;     // Ignora ruidos pequeños de las palancas
-        const GIRO_THRESH = 250;      // Umbral para cambiar las fotos de dirección
-        
-        // --- PERILLA DE SENSIBILIDAD ---
-        // 1.0 = Lineal (Pateón agresivo), 2.0 = Suave/Preciso, 3.0 = Ultra cirujano
+        const MAX_VEL = 1000;         
+        const ZONA_MUERTA = 0.15;     
+        const GIRO_THRESH = 250;      
         const EXPO_SUAVIZADO = 2.0;   
 
         let socket = null;
         let ultimoEnvioWS = 0; 
-        const INTERVALO_WS_MS = 30;   // Frecuencia de envío (~33 Hz)
+        const INTERVALO_WS_MS = 30;   
+
+        // --- NUEVA FUNCIÓN: CONEXIÓN MULTIMEDIA WEBRTC ---
+        async function iniciarTransmisionVideo() {
+            try {
+                const pc = new RTCPeerConnection({
+                    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+                });
+
+                // Cuando nos llegue el flujo multimedia de la Pi, lo inyectamos al reproductor HTML
+                pc.ontrack = (event) => {
+                    const videoComponente = document.getElementById("robot_feed");
+                    if (videoComponente.srcObject !== event.streams[0]) {
+                        videoComponente.srcObject = event.streams[0];
+                        // Desmutear para escuchar el micrófono del robot
+                        videoComponente.muted = false; 
+                        console.log("📺 ¡Video y Audio WebRTC recibidos con éxito!");
+                    }
+                };
+
+                // Declaramos que solo queremos recibir (video y audio)
+                pc.addTransceiver("video", { direction: "recvonly" });
+                pc.addTransceiver("audio", { direction: "recvonly" });
+
+                // Creamos oferta local
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+
+                // Mandamos la oferta por HTTP POST a la Raspberry Pi
+                const respuesta = await fetch("/offer", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    })
+                });
+
+                const answer = await respuesta.json();
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+
+            } catch (error) {
+                console.error("Error al arrancar el feed WebRTC:", error);
+            }
+        }
 
         function conectarWebSocket() {
             socket = new WebSocket(WS_URL);
 
             socket.onopen = () => {
-                document.getElementById("status").innerText = "MANDO EN LÍNEA (NGROK)";
-                console.log("¡Conexión establecida con la Raspberry!");
+                document.getElementById("status").innerText = "SISTEMA INTEGRADO OK";
                 bucleControl();
+                // Encendemos la cámara inmediatamente después de conectar
+                iniciarTransmisionVideo(); 
             };
 
-            // Escuchar telemetría de batería enviada por la Pi
             socket.onmessage = (event) => {
                 try {
                     const datosWeb = JSON.parse(event.data);
-                    
                     if (datosWeb.tipo === "telemetria") {
                         const porcentaje = parseInt(datosWeb.porcentaje);
                         const volts = parseFloat(datosWeb.voltaje).toFixed(2);
-                        
                         document.getElementById("bat_percent").innerText = porcentaje;
                         document.getElementById("bat_volts").innerText = volts;
                         
                         const batBox = document.getElementById("bat_box");
-                        if (porcentaje <= 20) {
-                            batBox.classList.add("low-battery");
-                        } else {
-                            batBox.classList.remove("low-battery");
-                        }
+                        if (porcentaje <= 20) batBox.classList.add("low-battery");
+                        else batBox.classList.remove("low-battery");
                     }
-                } catch (e) {
-                    console.error("Error leyendo telemetría:", e);
-                }
+                } catch (e) {}
             };
 
             socket.onclose = () => {
@@ -134,30 +181,23 @@
         function bucleControl() {
             if (socket.readyState !== WebSocket.OPEN) return;
 
-            // Buscador dinámico de mandos en cualquier ranura del navegador
             const gamepads = navigator.getGamepads();
             const gp = Array.from(gamepads).find(g => g !== null); 
 
             if (gp) {
-                let steer = gp.axes[0];            // Stick izquierdo X (Dirección)
-                let reversa = gp.buttons[6].value;  // Gatillo L2 (0.0 a 1.0)
-                let avance = gp.buttons[7].value;   // Gatillo R2 (0.0 a 1.0)
+                let steer = gp.axes[0];            
+                let reversa = gp.buttons[6].value;  
+                let avance = gp.buttons[7].value;   
 
                 if (Math.abs(steer) < ZONA_MUERTA) steer = 0;
 
-                // --- ALGORITMO EXPONENCIAL DE SENSIBILIDAD ---
-                // Aplica una curva al giro manteniendo el signo (+ o -)
                 let giroSuave = Math.sign(steer) * Math.pow(Math.abs(steer), EXPO_SUAVIZADO);
-
-                // Aplica una curva al avance/reversa combinado
                 let avanceFrenado = avance - reversa; 
                 let throttleSuave = Math.sign(avanceFrenado) * Math.pow(Math.abs(avanceFrenado), EXPO_SUAVIZADO);
 
-                // Escalamos a los límites de velocidad finales
                 let throttle = throttleSuave * MAX_VEL;
                 let giro = giroSuave * MAX_VEL;
 
-                // Verificación de datos en la pantalla
                 document.getElementById("telemetry").innerText = JSON.stringify({
                     "Control_Activo": gp.id,
                     "Gatillo_V": parseInt(throttle),
@@ -166,36 +206,24 @@
 
                 actualizarImagen(throttle, giro);
 
-                // Envío controlado hacia Ngrok
                 let tiempoActual = performance.now();
                 if (tiempoActual - ultimoEnvioWS >= INTERVALO_WS_MS) {
                     ultimoEnvioWS = tiempoActual;
-                    
-                    socket.send(JSON.stringify({
-                        v: parseInt(throttle), 
-                        w: parseInt(giro)     
-                    }));
+                    socket.send(JSON.stringify({ v: parseInt(throttle), w: parseInt(giro) }));
                 }
             } else {
                 document.getElementById("telemetry").innerText = "{ Presiona un botón en el mando para activarlo }";
             }
-
             requestAnimationFrame(bucleControl);
         }
 
         function actualizarImagen(throttle, giro) {
             const img = document.getElementById("dynamic_image");
-            if (throttle === 0 && giro === 0) {
-                img.src = IMAGE_FOLDER + "center.jpg";
-            } else if (throttle > 0 && Math.abs(giro) < GIRO_THRESH) {
-                img.src = IMAGE_FOLDER + "forward.jpg";
-            } else if (throttle < 0 && Math.abs(giro) < GIRO_THRESH) {
-                img.src = IMAGE_FOLDER + "backward.jpg";
-            } else if (giro > GIRO_THRESH) {
-                img.src = IMAGE_FOLDER + "right.jpg";
-            } else if (giro < -GIRO_THRESH) {
-                img.src = IMAGE_FOLDER + "left.jpg";
-            }
+            if (throttle === 0 && giro === 0) img.src = IMAGE_FOLDER + "center.jpg";
+            else if (throttle > 0 && Math.abs(giro) < GIRO_THRESH) img.src = IMAGE_FOLDER + "forward.jpg";
+            else if (throttle < 0 && Math.abs(giro) < GIRO_THRESH) img.src = IMAGE_FOLDER + "backward.jpg";
+            else if (giro > GIRO_THRESH) img.src = IMAGE_FOLDER + "right.jpg";
+            else if (giro < -GIRO_THRESH) img.src = IMAGE_FOLDER + "left.jpg";
         }
 
         conectarWebSocket();

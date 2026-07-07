@@ -6,9 +6,16 @@ import json
 import serial
 import threading
 import time
-from flask import Flask
+import cv2
+import asyncio
+from flask import Flask, request, jsonify
 from flask_sock import Sock
 from pyngrok import ngrok
+
+# Librerías de WebRTC y procesamiento de fotogramas
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
+from aiortc.contrib.media import MediaPlayer
+from av import VideoFrame
 
 # =========================================================
 # CONFIGURACIÓN GENERAL
@@ -20,132 +27,173 @@ sock = Sock(app)
 UART_PORT = "/dev/serial0"
 UART_BAUD = 115200
 ser = None
-
-# Set para rastrear las pestañas web conectadas simultáneamente
 clientes_conectados = set()
 
 # =========================================================
-# CONEXIÓN SERIAL INTERNA (A ESP32)
+# CONFIGURACIÓN DE HARDWARE (SERIAL Y CÁMARA)
 # =========================================================
 try:
     ser = serial.Serial(UART_PORT, UART_BAUD, timeout=0.1)
-    print(f"[*] [SERIAL] Conectado exitosamente a la ESP32 en ({UART_PORT})")
+    print(f"[*] [SERIAL] Conectado a la ESP32 en ({UART_PORT})")
 except Exception as e:
-    print(f"[!] [SERIAL] Error en pines GPIO: {e}. Intentando por USB (/dev/ttyUSB0)...")
+    print(f"[!] [SERIAL] Error en pines GPIO: {e}. Intentando USB (/dev/ttyUSB0)...")
     try:
         ser = serial.Serial("/dev/ttyUSB0", UART_BAUD, timeout=0.1)
         print("[*] [SERIAL] ¡Conectado por USB de respaldo!")
     except Exception as err:
-        print(f"[!] [SERIAL] Error crítico: {err}. Modo simulación activo (Motores en pausa).")
+        print(f"[!] [SERIAL] Modo simulación activo (Motores en pausa).")
+
+# Inicializamos la cámara globalmente para OpenCV
+cap = cv2.VideoCapture(0)
+cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
+cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
+
+# Inicializamos el micrófono de la cámara web vía ALSA
+audio_player = None
+try:
+    audio_player = MediaPlayer("default", format="alsa")
+    print("[*] [WEBRTC] Micrófono ALSA inicializado correctamente.")
+except Exception as e:
+    print(f"[!] [WEBRTC] No se detectó micrófono de hardware: {e}")
 
 # =========================================================
-# HILO SECUNDARIO: LEER BATERÍA DESDE LA ESP32
+# CLASE: TRACK DE VIDEO PERSONALIZADO DE OPENCV
+# =========================================================
+class OpenCVVideoTrack(MediaStreamTrack):
+    kind = "video"
+
+    def __init__(self):
+        super().__init__()
+
+    async def recv(self):
+        pts, time_base = await self.next_timestamp()
+        
+        # Leemos la cámara en un ejecutor para no congelar el flujo asíncrono
+        loop = asyncio.get_event_loop()
+        ret, frame = await loop.run_in_executor(None, cap.read)
+        
+        if not ret or frame is None:
+            # Cuadro negro de respaldo si se desconecta la cámara física
+            import numpy as np
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
+            cv2.putText(frame, "CAMARA DESCONECTADA", (140, 240), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+        else:
+            # Convertimos de BGR (OpenCV) a RGB (WebRTC)
+            frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            
+            # [AQUÍ IRÁ TU PROCESAMIENTO DE QR O IA EN EL FUTURO]
+
+        # Empaquetamos el cuadro para enviarlo por internet
+        video_frame = VideoFrame.from_ndarray(frame, format="rgb24")
+        video_frame.pts = pts
+        video_frame.time_base = time_base
+        return video_frame
+
+# =========================================================
+# HILO ASÍNCRONO PARA WEBRTC (Evita congelar Flask)
+# =========================================================
+rtc_loop = asyncio.new_event_loop()
+def correr_bucle_webrtc(loop):
+    asyncio.set_event_loop(loop)
+    loop.run_forever()
+
+threading.Thread(target=correr_bucle_webrtc, args=(rtc_loop,), daemon=True).start()
+
+pcs = set()
+
+async def procesar_signaling_webrtc(offer_dict):
+    pc = RTCPeerConnection()
+    pcs.add(pc)
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        if pc.connectionState in ["failed", "closed"]:
+            await pc.close()
+            pcs.discard(pc)
+            print("[*] [WEBRTC] Conexión multimedia cerrada.")
+
+    # Inyectamos el video de OpenCV
+    pc.addTrack(OpenCVVideoTrack())
+
+    # Inyectamos el audio del micrófono (si está disponible)
+    if audio_player and audio_player.audio:
+        pc.addTrack(audio_player.audio)
+
+    # Configuración de oferta y respuesta SDP
+    offer = RTCSessionDescription(sdp=offer_dict["sdp"], type=offer_dict["type"])
+    await pc.setRemoteDescription(offer)
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+
+    return {"sdp": pc.localDescription.sdp, "type": pc.localDescription.type}
+
+# Ruta HTTP POST para negociar el video
+@app.route('/offer', methods=['POST'])
+def handle_offer():
+    datos_oferta = request.get_json()
+    futuro = asyncio.run_coroutine_threadsafe(procesar_signaling_webrtc(datos_oferta), rtc_loop)
+    respuesta_sdp = futuro.result()
+    return jsonify(respuesta_sdp)
+
+# =========================================================
+# TELEMETRÍA DE BATERÍA Y MANDOS (IGUAL QUE ANTES)
 # =========================================================
 def escuchar_esp32_bateria():
-    global ser
-    print("[*] [HILO-BATERÍA] Escuchando telemetría de la ESP32...")
     while True:
         if ser and ser.is_open:
             try:
                 if ser.in_waiting > 0:
-                    # Leemos la línea que manda la ESP32
                     linea = ser.readline().decode('utf-8', errors='ignore').strip()
-                    
-                    # Filtramos el paquete de batería: <b,voltaje,porcentaje>
                     if linea.startswith("<b,") and linea.endswith(">"):
                         datos = linea[3:-1].split(',')
                         if len(datos) == 2:
-                            voltaje = datos[0]
-                            porcentaje = datos[1]
-                            
-                            # Estructura JSON para enviar a la web
-                            paquete_web = json.dumps({
-                                "tipo": "telemetria",
-                                "voltaje": voltaje,
-                                "porcentaje": porcentaje
-                            })
-                            
-                            # Transmitimos en vivo a todos los navegadores conectados
+                            paquete_web = json.dumps({"tipo": "telemetria", "voltaje": datos[0], "porcentaje": datos[1]})
                             for ws in list(clientes_conectados):
                                 try:
                                     ws.send(paquete_web)
                                 except Exception:
                                     clientes_conectados.remove(ws)
-                                    
-            except Exception as e:
-                print(f"[!] [HILO-BATERÍA] Error leyendo serial: {e}")
-        time.sleep(0.01) # Pequeña pausa para no saturar el procesador
+            except Exception:
+                pass
+        time.sleep(0.01)
 
-# Lanzamos el hilo de la batería en background
 threading.Thread(target=escuchar_esp32_bateria, daemon=True).start()
 
-# =========================================================
-# CANAL WEBSOCKET (RECIBIR MANDOS DESDE LA WEB)
-# =========================================================
 @sock.route('/robot')
 def canal_robot(ws):
     print("[*] [WEBSOCKET] ¡Mando en línea detectado por el túnel!")
     clientes_conectados.add(ws)
-    
-    # Contador chismoso para el terminal
     paquetes_recibidos = 0
-    
     try:
         while True:
             mensaje = ws.receive()
-            if not mensaje:
-                break
-                
+            if not mensaje: break
             try:
                 datos = json.loads(mensaje)
+                v = max(-1000, min(1000, int(datos.get("v", 0))))
+                w = max(-1000, min(1000, int(datos.get("w", 0))))
                 
-                # Leemos avance (v) y giro (w) mandados desde javascript
-                v = int(datos.get("v", 0))
-                w = int(datos.get("w", 0))
-                
-                # Límites de seguridad (-1000 a 1000)
-                v = max(-1000, min(1000, v))
-                w = max(-1000, min(1000, w))
-                
-                # Imprime en tu terminal una muestra para saber si la web responde
                 paquetes_recibidos += 1
                 if paquetes_recibidos % 33 == 0: 
                     print(f"📡 [WEB -> PI] Datos en vivo: v={v:4d} | w={w:4d}")
                 
-                # Escribimos directo al hardware en formato <v,w>\n
                 if ser and ser.is_open:
-                    paquete_serial = f"<{v},{w}>\n"
-                    ser.write(paquete_serial.encode('utf-8'))
-                    
-            except Exception as e:
-                print(f"[!] Error procesando JSON de la web: {e}")
-                
+                    ser.write(f"<{v},{w}>\n".encode('utf-8'))
+            except Exception:
+                pass
     finally:
-        if ws in clientes_conectados:
-            clientes_conectados.remove(ws)
-        print("[*] [WEBSOCKET] Mando web desconectado.")
+        if ws in clientes_conectados: clientes_conectados.remove(ws)
 
 @app.route('/')
 def index():
     return app.send_static_file('index.html')
 
-# =========================================================
-# ARRANQUE DE SERVIDORES Y TÚNEL NGROK
-# =========================================================
 if __name__ == '__main__':
     PUERTO_LOCAL = 8000
-    
-    print("\n========================================================")
-    print("[*] [NGROK] Levantando puente seguro hacia Internet...")
-    print("========================================================")
-    
     try:
         tunel_publico = ngrok.connect(PUERTO_LOCAL, bind_tls=True)
-        url_publica = tunel_publico.public_url
-        print("\n🚀 ¡SISTEMA UNIFICADO EN LÍNEA DESDE CUALQUIER LUGAR! 🚀")
-        print(f"🔗 Entra desde tu cel aquí: {url_publica}")
-        print("========================================================\n")
+        print(f"\n🚀 ¡ROVER ONLINE! 🔗 Entra aquí: {tunel_publico.public_url}\n")
     except Exception as e:
-        print(f"[!] [NGROK] Error al iniciar túnel: {e}. Disponible solo en red local.")
-
+        print(f"[!] Ngrok deshabilitado: {e}")
     app.run(host='0.0.0.0', port=PUERTO_LOCAL, debug=False)
