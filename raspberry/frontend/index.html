@@ -102,7 +102,6 @@
         let ultimoEnvioWS = 0; 
         const INTERVALO_WS_MS = 30;   
 
-        // --- FUNCIÓN CORREGIDA CON ESPERA DE CANDIDATOS ICE ---
         async function iniciarTransmisionVideo() {
             try {
                 const pc = new RTCPeerConnection({
@@ -114,7 +113,11 @@
                     const videoComponente = document.getElementById("robot_feed");
                     if (videoComponente.srcObject !== event.streams[0]) {
                         videoComponente.srcObject = event.streams[0];
-                        videoComponente.muted = false; // Desmutear para escuchar el cuarto
+                        
+                        // 🔥 PARCHE DE REPRODUCCIÓN AUTOMÁTICA:
+                        videoComponente.muted = true; // Muted obligatorio para saltar el bloqueo de Chrome
+                        videoComponente.play().catch(e => console.log("Video listo, esperando play interactivo:", e));
+                        
                         console.log("📺 ¡Feed WebRTC en vivo conectado!");
                     }
                 };
@@ -126,7 +129,7 @@
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
 
-                // 🔥 CRUCIAL: Esperar que el navegador arme los caminos de red (STUN) para Ngrok
+                // Esperar que el navegador arme los caminos de red (STUN) para Ngrok
                 await new Promise((resolve) => {
                     if (pc.iceGatheringState === "complete") {
                         resolve();

@@ -44,19 +44,19 @@ except Exception as e:
         print(f"[!] [SERIAL] Modo simulación activo (Motores en pausa).")
 
 # =========================================================
-# ESCÁNER MEJORADO: COMPRUEBA SI FLUYE VIDEO REAL
+# ESCÁNER MEJORADO: FILTRA CÁMARAS FANTASMAS
 # =========================================================
 def inicializar_camara_inteligente():
-    # Buscamos en un rango amplio de puertos de Linux para brincar el puerto fantasma /dev/video0
+    # Escanea puertos físicos reales saltándose el puerto virtual /dev/video0 si es ciego
     for index in [2, 4, 1, 0, 10, 11, 14]:
         print(f"[*] [CÁMARA] Evaluando canal físico /dev/video{index}...")
         test_cap = cv2.VideoCapture(index)
         if test_cap.isOpened():
-            # Forzamos la lectura de un par de cuadros para limpiar el buffer interno
+            # Limpiamos buffer interno leyendo cuadros basura
             for _ in range(3):
                 ret, frame = test_cap.read()
             
-            # Si el cuadro es válido y tiene dimensiones reales
+            # Si responde con pixeles reales y dimensiones válidas
             if ret and frame is not None and frame.shape[0] > 0:
                 print(f"✨ [CÁMARA] ¡Webcam REAL detectada y transmitiendo en /dev/video{index}!")
                 test_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
@@ -73,7 +73,6 @@ cap = inicializar_camara_inteligente()
 # ESCÁNER INTELIGENTE DE MICRÓFONO (EVITA ERRORES ALSA)
 # =========================================================
 audio_player = None
-# 'hw:1' y 'hw:2' apuntan directo a tarjetas de sonido externas USB
 for dispositivo_audio in ["hw:1", "hw:2", "default"]:
     try:
         audio_player = MediaPlayer(dispositivo_audio, format="alsa")
@@ -136,10 +135,8 @@ async def procesar_signaling_webrtc(offer_dict):
             pcs.discard(pc)
             print("[*] [WEBRTC] Conexión multimedia finalizada.")
 
-    # Inyectar la pista de video de OpenCV
     pc.addTrack(OpenCVVideoTrack())
 
-    # Inyectar la pista de audio si el micrófono se abrió con éxito
     if audio_player and audio_player.audio:
         pc.addTrack(audio_player.audio)
 
