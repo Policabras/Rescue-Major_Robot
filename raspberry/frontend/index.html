@@ -17,7 +17,7 @@
             padding: 20px;
             box-sizing: border-box;
         }
-        /* --- REPRODUCTOR DE VIDEO WEBRTC --- */
+        /* --- VISOR DE CÁMARA MJPEG --- */
         #robot_feed {
             width: 440px;
             height: 330px;
@@ -74,7 +74,7 @@
 </head>
 <body>
 
-    <video id="robot_feed" autoplay playsinline muted></video>
+    <img id="robot_feed" alt="[ Esperando señal de cámara... ]">
 
     <div class="panel">
         <h2 id="status">CONECTANDO AL ROBOT...</h2>
@@ -102,77 +102,17 @@
         let ultimoEnvioWS = 0; 
         const INTERVALO_WS_MS = 30;   
 
-        async function iniciarTransmisionVideo() {
-            try {
-                const pc = new RTCPeerConnection({
-                    iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
-                });
-
-                // Captura el flujo proveniente de la Raspberry
-                pc.ontrack = (event) => {
-                    const videoComponente = document.getElementById("robot_feed");
-                    console.log("📺 ¡Pista multimedia recibida! Tipo:", event.track.kind);
-                    
-                    // 🔥 EL TRUCO PARA DESPERTAR A CHROME:
-                    if (videoComponente.srcObject) {
-                        videoComponente.srcObject.addTrack(event.track);
-                        // Truco maestro: Reasignar el mismo objeto fuerza al navegador a recalcular y pintar el video
-                        videoComponente.srcObject = videoComponente.srcObject; 
-                    } else {
-                        // Si es el primer track que llega, creamos el contenedor con él adentro
-                        videoComponente.srcObject = new MediaStream([event.track]);
-                    }
-                    
-                    // Forzar el inicio visual ignorando restricciones del navegador
-                    videoComponente.muted = true; 
-                    videoComponente.play().catch(e => console.log("Esperando play interactivo:", e));
-                };
-
-                // Indicamos que queremos recibir video y audio
-                pc.addTransceiver("video", { direction: "recvonly" });
-                pc.addTransceiver("audio", { direction: "recvonly" });
-
-                const offer = await pc.createOffer();
-                await pc.setLocalDescription(offer);
-
-                // Esperar que el navegador arme los caminos de red (STUN) para Ngrok
-                await new Promise((resolve) => {
-                    if (pc.iceGatheringState === "complete") {
-                        resolve();
-                    } else {
-                        pc.onicegatheringstatechange = () => {
-                            if (pc.iceGatheringState === "complete") resolve();
-                        };
-                    }
-                });
-
-                console.log("📡 Enviando apretón de manos multimedia a la Pi...");
-
-                // POST al servidor Flask
-                const respuesta = await fetch("/offer", {
-                    method: "POST",
-                    headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({
-                        sdp: pc.localDescription.sdp,
-                        type: pc.localDescription.type
-                    })
-                });
-
-                const answer = await respuesta.json();
-                await pc.setRemoteDescription(new RTCSessionDescription(answer));
-
-            } catch (error) {
-                console.error("Error al arrancar el feed WebRTC:", error);
-            }
-        }
-
         function conectarWebSocket() {
             socket = new WebSocket(WS_URL);
 
             socket.onopen = () => {
                 document.getElementById("status").innerText = "SISTEMA INTEGRADO OK";
                 bucleControl();
-                iniciarTransmisionVideo(); 
+                
+                // 🔥 ACTIVACIÓN DE CÁMARA INFALIBLE:
+                // Conectamos el feed directamente al endpoint de Flask de forma nativa
+                document.getElementById("robot_feed").src = "/video_feed";
+                console.log("📺 ¡Streaming MJPEG activado con éxito!");
             };
 
             socket.onmessage = (event) => {
@@ -193,6 +133,7 @@
 
             socket.onclose = () => {
                 document.getElementById("status").innerText = "CONEXIÓN PERDIDA";
+                document.getElementById("robot_feed").src = ""; // Apaga visor si cae la red
                 setTimeout(conectarWebSocket, 2000);
             };
         }
