@@ -111,19 +111,21 @@
                 // Captura el flujo proveniente de la Raspberry
                 pc.ontrack = (event) => {
                     const videoComponente = document.getElementById("robot_feed");
+                    console.log("📺 ¡Pista multimedia recibida! Tipo:", event.track.kind);
                     
-                    // 🔥 CORRECCIÓN AQUÍ: Si el video no tiene un contenedor MediaStream real, se lo creamos
-                    if (!videoComponente.srcObject || !(videoComponente.srcObject instanceof MediaStream)) {
-                        videoComponente.srcObject = new MediaStream();
+                    // 🔥 EL TRUCO PARA DESPERTAR A CHROME:
+                    if (videoComponente.srcObject) {
+                        videoComponente.srcObject.addTrack(event.track);
+                        // Truco maestro: Reasignar el mismo objeto fuerza al navegador a recalcular y pintar el video
+                        videoComponente.srcObject = videoComponente.srcObject; 
+                    } else {
+                        // Si es el primer track que llega, creamos el contenedor con él adentro
+                        videoComponente.srcObject = new MediaStream([event.track]);
                     }
                     
-                    // Le inyectamos directamente la pista de video (track) que viene de la Pi
-                    videoComponente.srcObject.addTrack(event.track);
-                    
+                    // Forzar el inicio visual ignorando restricciones del navegador
                     videoComponente.muted = true; 
-                    videoComponente.play().catch(e => console.log("Esperando play:", e));
-                    
-                    console.log("📺 ¡Feed WebRTC en vivo conectado!");
+                    videoComponente.play().catch(e => console.log("Esperando play interactivo:", e));
                 };
 
                 // Indicamos que queremos recibir video y audio
