@@ -17,7 +17,7 @@
             padding: 20px;
             box-sizing: border-box;
         }
-        /* --- NUEVO REPRODUCTOR DE VIDEO WEBRTC --- */
+        /* --- REPRODUCTOR DE VIDEO WEBRTC --- */
         #robot_feed {
             width: 440px;
             height: 330px;
@@ -102,33 +102,44 @@
         let ultimoEnvioWS = 0; 
         const INTERVALO_WS_MS = 30;   
 
-        // --- NUEVA FUNCIÓN: CONEXIÓN MULTIMEDIA WEBRTC ---
+        // --- FUNCIÓN CORREGIDA CON ESPERA DE CANDIDATOS ICE ---
         async function iniciarTransmisionVideo() {
             try {
                 const pc = new RTCPeerConnection({
                     iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
                 });
 
-                // Cuando nos llegue el flujo multimedia de la Pi, lo inyectamos al reproductor HTML
+                // Captura el flujo proveniente de la Raspberry
                 pc.ontrack = (event) => {
                     const videoComponente = document.getElementById("robot_feed");
                     if (videoComponente.srcObject !== event.streams[0]) {
                         videoComponente.srcObject = event.streams[0];
-                        // Desmutear para escuchar el micrófono del robot
-                        videoComponente.muted = false; 
-                        console.log("📺 ¡Video y Audio WebRTC recibidos con éxito!");
+                        videoComponente.muted = false; // Desmutear para escuchar el cuarto
+                        console.log("📺 ¡Feed WebRTC en vivo conectado!");
                     }
                 };
 
-                // Declaramos que solo queremos recibir (video y audio)
+                // Indicamos que queremos recibir video y audio obligatoriamente
                 pc.addTransceiver("video", { direction: "recvonly" });
                 pc.addTransceiver("audio", { direction: "recvonly" });
 
-                // Creamos oferta local
                 const offer = await pc.createOffer();
                 await pc.setLocalDescription(offer);
 
-                // Mandamos la oferta por HTTP POST a la Raspberry Pi
+                // 🔥 CRUCIAL: Esperar que el navegador arme los caminos de red (STUN) para Ngrok
+                await new Promise((resolve) => {
+                    if (pc.iceGatheringState === "complete") {
+                        resolve();
+                    } else {
+                        pc.onicegatheringstatechange = () => {
+                            if (pc.iceGatheringState === "complete") resolve();
+                        };
+                    }
+                });
+
+                console.log("📡 Enviando apretón de manos multimedia a la Pi...");
+
+                // POST al servidor Flask
                 const respuesta = await fetch("/offer", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
@@ -152,7 +163,7 @@
             socket.onopen = () => {
                 document.getElementById("status").innerText = "SISTEMA INTEGRADO OK";
                 bucleControl();
-                // Encendemos la cámara inmediatamente después de conectar
+                // Encendemos la cámara inmediatamente después de conectar los mandos
                 iniciarTransmisionVideo(); 
             };
 

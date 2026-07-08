@@ -18,7 +18,7 @@ from aiortc.contrib.media import MediaPlayer
 from av import VideoFrame
 
 # =========================================================
-# CONFIGURACIÓN GENERAL
+# CONFIGURACIÓN GENERAL DE RUTAS Y FLASK
 # =========================================================
 CARPETA_ACTUAL = os.path.dirname(os.path.abspath(__file__))
 app = Flask(__name__, static_folder=CARPETA_ACTUAL, static_url_path='')
@@ -44,23 +44,27 @@ except Exception as e:
         print(f"[!] [SERIAL] Modo simulación activo (Motores en pausa).")
 
 # =========================================================
-# ESCÁNER INTELIGENTE DE CÁMARA (EVITA PUERTOS FANTASMA)
+# ESCÁNER MEJORADO: COMPRUEBA SI FLUYE VIDEO REAL
 # =========================================================
 def inicializar_camara_inteligente():
-    # Probamos los índices más comunes en Raspberry Pi (2 y 4 suelen ser webcams USB)
-    for index in [2, 4, 0, 1, 6]:
-        print(f"[*] [CÁMARA] Probando disponibilidad en índice {index}...")
+    # Buscamos en un rango amplio de puertos de Linux para brincar el puerto fantasma /dev/video0
+    for index in [2, 4, 1, 0, 10, 11, 14]:
+        print(f"[*] [CÁMARA] Evaluando canal físico /dev/video{index}...")
         test_cap = cv2.VideoCapture(index)
         if test_cap.isOpened():
-            ret, frame = test_cap.read()
-            if ret and frame is not None:
-                print(f"✨ [CÁMARA] ¡Webcam USB detectada con éxito en /dev/video{index}!")
+            # Forzamos la lectura de un par de cuadros para limpiar el buffer interno
+            for _ in range(3):
+                ret, frame = test_cap.read()
+            
+            # Si el cuadro es válido y tiene dimensiones reales
+            if ret and frame is not None and frame.shape[0] > 0:
+                print(f"✨ [CÁMARA] ¡Webcam REAL detectada y transmitiendo en /dev/video{index}!")
                 test_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
                 test_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 return test_cap
         test_cap.release()
     
-    print("[!] [CÁMARA] No se detectó ninguna webcam activa. Usando modo simulación gráfica.")
+    print("[!] [CÁMARA] Alerta: No se obtuvo respuesta de hardware real. Usando canal por defecto.")
     return cv2.VideoCapture(0)
 
 cap = inicializar_camara_inteligente()
@@ -69,7 +73,7 @@ cap = inicializar_camara_inteligente()
 # ESCÁNER INTELIGENTE DE MICRÓFONO (EVITA ERRORES ALSA)
 # =========================================================
 audio_player = None
-# 'hw:1' y 'hw:2' apuntan directo a tarjetas de sonido externas (como la webcam USB)
+# 'hw:1' y 'hw:2' apuntan directo a tarjetas de sonido externas USB
 for dispositivo_audio in ["hw:1", "hw:2", "default"]:
     try:
         audio_player = MediaPlayer(dispositivo_audio, format="alsa")
@@ -79,7 +83,7 @@ for dispositivo_audio in ["hw:1", "hw:2", "default"]:
         audio_player = None
 
 if not audio_player:
-    print("[⚠️] [WEBRTC] No se detectó micrófono de hardware compatible. Transmisión solo de video activa.")
+    print("[⚠️] [WEBRTC] No se detectó micrófono compatible. Transmisión solo de video activa.")
 
 # =========================================================
 # CLASE: TRACK DE VIDEO PERSONALIZADO DE OPENCV
@@ -110,7 +114,7 @@ class OpenCVVideoTrack(MediaStreamTrack):
         return video_frame
 
 # =========================================================
-# HILO ASÍNCRONO PARA WEBRTC
+# HILO ASÍNCRONO PARA WEBRTC (Evita congelar Flask)
 # =========================================================
 rtc_loop = asyncio.new_event_loop()
 def correr_bucle_webrtc(loop):
@@ -179,7 +183,7 @@ threading.Thread(target=escuchar_esp32_bateria, daemon=True).start()
 
 @sock.route('/robot')
 def canal_robot(ws):
-    print("[*] [WEBSOCKET] Mando en línea detectado.")
+    print("[*] [WEBSOCKET] Mando en línea detectado por el túnel.")
     clientes_conectados.add(ws)
     paquetes_recibidos = 0
     try:
