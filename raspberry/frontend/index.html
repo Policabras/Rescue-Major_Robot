@@ -111,18 +111,22 @@
                 // Captura el flujo proveniente de la Raspberry
                 pc.ontrack = (event) => {
                     const videoComponente = document.getElementById("robot_feed");
-                    if (videoComponente.srcObject !== event.streams[0]) {
-                        videoComponente.srcObject = event.streams[0];
-                        
-                        // 🔥 PARCHE DE REPRODUCCIÓN AUTOMÁTICA:
-                        videoComponente.muted = true; // Muted obligatorio para saltar el bloqueo de Chrome
-                        videoComponente.play().catch(e => console.log("Video listo, esperando play interactivo:", e));
-                        
-                        console.log("📺 ¡Feed WebRTC en vivo conectado!");
+                    
+                    // 🔥 CORRECCIÓN AQUÍ: Si el video no tiene un contenedor MediaStream real, se lo creamos
+                    if (!videoComponente.srcObject || !(videoComponente.srcObject instanceof MediaStream)) {
+                        videoComponente.srcObject = new MediaStream();
                     }
+                    
+                    // Le inyectamos directamente la pista de video (track) que viene de la Pi
+                    videoComponente.srcObject.addTrack(event.track);
+                    
+                    videoComponente.muted = true; 
+                    videoComponente.play().catch(e => console.log("Esperando play:", e));
+                    
+                    console.log("📺 ¡Feed WebRTC en vivo conectado!");
                 };
 
-                // Indicamos que queremos recibir video y audio obligatoriamente
+                // Indicamos que queremos recibir video y audio
                 pc.addTransceiver("video", { direction: "recvonly" });
                 pc.addTransceiver("audio", { direction: "recvonly" });
 
@@ -166,7 +170,6 @@
             socket.onopen = () => {
                 document.getElementById("status").innerText = "SISTEMA INTEGRADO OK";
                 bucleControl();
-                // Encendemos la cámara inmediatamente después de conectar los mandos
                 iniciarTransmisionVideo(); 
             };
 
