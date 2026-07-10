@@ -8,27 +8,38 @@
             background-color: #0d0d12;
             color: #00ffcc;
             font-family: monospace;
-            display: flex;
-            flex-direction: column;
+            /* Activamos Grid para dividir la pantalla en dos mitades perfectas */
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            grid-template-rows: auto auto;
+            gap: 20px;
             align-items: center;
             justify-content: center;
             min-height: 100vh;
             margin: 0;
-            padding: 20px;
+            padding: 40px;
             box-sizing: border-box;
         }
-        /* --- VISOR DE CÁMARA MJPEG --- */
+
+        /* --- MITAD IZQUIERDA: CÁMARA --- */
         #robot_feed {
+            grid-column: 1;
+            grid-row: 1 / span 2; /* Ocupa todo el alto del lado izquierdo */
+            justify-self: end;    /* Lo pega al centro de la pantalla */
             width: 440px;
             height: 330px;
             background-color: #11111b;
             border: 2px solid #00ffcc;
             border-radius: 8px;
-            margin-bottom: 20px;
             box-shadow: 0 0 20px rgba(0, 255, 204, 0.15);
             object-fit: cover;
         }
+
+        /* --- MITAD DERECHA: TELEMETRÍA Y STATUS --- */
         .panel {
+            grid-column: 2;
+            grid-row: 1;
+            justify-self: start;  /* Lo pega al centro junto a la cámara */
             border: 1px solid #00ffcc;
             padding: 20px;
             border-radius: 8px;
@@ -60,11 +71,18 @@
             border-radius: 4px;
             margin: 0;
         }
+
+        /* --- MITAD DERECHA ABAJO: IMAGEN DINÁMICA --- */
         #dynamic_image {
+            grid-column: 2;
+            grid-row: 2;
+            justify-self: start;  /* Alineada perfectamente con el panel de arriba */
+            margin-left: 115px;   /* Centrado visual respecto al panel de 350px */
             border: 2px solid #00ffcc;
             border-radius: 10px;
-            margin-top: 20px;
+            box-shadow: 0 0 10px rgba(0, 255, 204, 0.1);
         }
+
         @keyframes parpadeo {
             0% { opacity: 1; }
             50% { opacity: 0.5; }
@@ -74,7 +92,7 @@
 </head>
 <body>
 
-    <img id="robot_feed" alt="[ Esperando señal de cámara... ]">
+    <img id="robot_feed" alt="[ Esperando señal de cámara... ]" class="camera-feed">
 
     <div class="panel">
         <h2 id="status">CONECTANDO AL ROBOT...</h2>
