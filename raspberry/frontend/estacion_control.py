@@ -149,4 +149,4 @@ if __name__ == '__main__':
         print(f"\n🚀 ¡ROVER ONLINE CON MJPEG! 🔗 Abre este enlace: {tunel_publico.public_url}\n")
     except Exception as e:
         print(f"[!] Ngrok deshabilitado: {e}")
-    app.run(host='0.0.0.0', port=PUERTO_LOCAL, debug=False)
+    app.run(host='0.0.0.0', port=PUERTO_LOCAL, debug=False) # m voy a matar
