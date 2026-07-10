@@ -2,13 +2,12 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Estación de Control Rover - Unificada</title>
+    <title>Estación de Control Rover - WebRTC Unificada</title>
     <style>
         body {
             background-color: #0d0d12;
             color: #00ffcc;
             font-family: monospace;
-            /* Activamos Grid para dividir la pantalla en dos mitades perfectas */
             display: grid;
             grid-template-columns: 1fr 1fr;
             grid-template-rows: auto auto;
@@ -21,11 +20,11 @@
             box-sizing: border-box;
         }
 
-        /* --- MITAD IZQUIERDA: CÁMARA --- */
+        /* --- MITAD IZQUIERDA: VISOR DE VIDEO WEBRTC --- */
         #robot_feed {
             grid-column: 1;
-            grid-row: 1 / span 2; /* Ocupa todo el alto del lado izquierdo */
-            justify-self: end;    /* Lo pega al centro de la pantalla */
+            grid-row: 1 / span 2;
+            justify-self: end;
             width: 440px;
             height: 330px;
             background-color: #11111b;
@@ -35,11 +34,11 @@
             object-fit: cover;
         }
 
-        /* --- MITAD DERECHA: TELEMETRÍA Y STATUS --- */
+        /* --- MITAD DERECHA: PANELES --- */
         .panel {
             grid-column: 2;
             grid-row: 1;
-            justify-self: start;  /* Lo pega al centro junto a la cámara */
+            justify-self: start;
             border: 1px solid #00ffcc;
             padding: 20px;
             border-radius: 8px;
@@ -72,15 +71,13 @@
             margin: 0;
         }
 
-        /* --- MITAD DERECHA ABAJO: IMAGEN DINÁMICA --- */
         #dynamic_image {
             grid-column: 2;
             grid-row: 2;
-            justify-self: start;  /* Alineada perfectamente con el panel de arriba */
-            margin-left: 115px;   /* Centrado visual respecto al panel de 350px */
+            justify-self: start;
+            margin-left: 115px;
             border: 2px solid #00ffcc;
             border-radius: 10px;
-            box-shadow: 0 0 10px rgba(0, 255, 204, 0.1);
         }
 
         @keyframes parpadeo {
@@ -92,48 +89,47 @@
 </head>
 <body>
 
-    <img id="robot_feed" alt="[ Esperando señal de cámara... ]" class="camera-feed">
+    <!-- Cambiado a etiqueta <video> para soportar Audio + Video nativo sincronizado -->
+    <video id="robot_feed" autoplay playsinline></video>
 
     <div class="panel">
-        <h2 id="status">CONECTANDO AL ROBOT...</h2>
+        <h2 id="status">INICIANDO ENLACE WEBRTC...</h2>
         
         <div id="bat_box" class="battery-panel">
             🔋 BATERÍA: <span id="bat_percent">--</span>% (<span id="bat_volts">--.--</span>V)
         </div>
 
-        <pre id="telemetry">{ Esperando datos del mando... }</pre>
+        <pre id="telemetry">{ Esperando interacción o mando... }</pre>
     </div>
     
     <img id="dynamic_image" src="imgs/center.jpg" alt="Status" width="120">
 
     <script>
-        const protocolo = window.location.protocol === "https:" ? "wss://" : "ws://";
-        const WS_URL = protocolo + window.location.host + "/robot";
         const IMAGE_FOLDER = "imgs/";
-        
         const MAX_VEL = 1000;         
         const ZONA_MUERTA = 0.15;     
         const GIRO_THRESH = 250;      
         const EXPO_SUAVIZADO = 2.0;   
 
-        let socket = null;
+        let pc = null;
+        let dc = null;
         let ultimoEnvioWS = 0; 
         const INTERVALO_WS_MS = 30;   
 
-        function conectarWebSocket() {
-            socket = new WebSocket(WS_URL);
+        function iniciarWebRTC() {
+            if (pc) return;
 
-            socket.onopen = () => {
+            pc = new RTCPeerConnection();
+
+            // Creamos el DataChannel para telemetría y mandos
+            dc = pc.createDataChannel("mando");
+            
+            dc.onopen = () => {
                 document.getElementById("status").innerText = "SISTEMA INTEGRADO OK";
                 bucleControl();
-                
-                // 🔥 ACTIVACIÓN DE CÁMARA INFALIBLE:
-                // Conectamos el feed directamente al endpoint de Flask de forma nativa
-                document.getElementById("robot_feed").src = "/video_feed";
-                console.log("📺 ¡Streaming MJPEG activado con éxito!");
             };
 
-            socket.onmessage = (event) => {
+            dc.onmessage = (event) => {
                 try {
                     const datosWeb = JSON.parse(event.data);
                     if (datosWeb.tipo === "telemetria") {
@@ -149,20 +145,47 @@
                 } catch (e) {}
             };
 
-            socket.onclose = () => {
-                document.getElementById("status").innerText = "CONEXIÓN PERDIDA";
-                document.getElementById("robot_feed").src = ""; // Apaga visor si cae la red
-                setTimeout(conectarWebSocket, 2000);
+            // Cuando llega el flujo multimedia, lo inyectamos al contenedor
+            pc.ontrack = (event) => {
+                document.getElementById("robot_feed").srcObject = event.streams[0];
             };
+
+            // Solicitamos recibir video y audio del Rover
+            pc.addTransceiver('video', {direction: 'recvonly'});
+            pc.addTransceiver('audio', {direction: 'recvonly'});
+
+            // Intercambio de llaves de conexión (Signaling)
+            pc.createOffer().then(offer => {
+                return pc.setLocalDescription(offer);
+            }).then(() => {
+                return fetch('/offer', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        sdp: pc.localDescription.sdp,
+                        type: pc.localDescription.type
+                    })
+                });
+            }).then(res => res.json())
+            .then(answer => {
+                return pc.setRemoteDescription(answer);
+            }).catch(err => {
+                console.error(err);
+                document.getElementById("status").innerText = "ERROR EN ENLACE";
+            });
         }
 
         function bucleControl() {
-            if (socket.readyState !== WebSocket.OPEN) return;
+            if (!dc || dc.readyState !== "open") return;
 
             const gamepads = navigator.getGamepads();
             const gp = Array.from(gamepads).find(g => g !== null); 
 
             if (gp) {
+                // Forzar la reproducción si el navegador bloqueó el audio de inicio
+                const videoEl = document.getElementById("robot_feed");
+                if (videoEl.paused) videoEl.play().catch(()=>{});
+
                 let steer = gp.axes[0];            
                 let reversa = gp.buttons[6].value;  
                 let avance = gp.buttons[7].value;   
@@ -177,7 +200,7 @@
                 let giro = giroSuave * MAX_VEL;
 
                 document.getElementById("telemetry").innerText = JSON.stringify({
-                    "Control_Activo": gp.id,
+                    "Enlace": "WebRTC P2P Datachannel",
                     "Gatillo_V": parseInt(throttle),
                     "Joystick_W": parseInt(giro)
                 }, null, 2);
@@ -187,10 +210,10 @@
                 let tiempoActual = performance.now();
                 if (tiempoActual - ultimoEnvioWS >= INTERVALO_WS_MS) {
                     ultimoEnvioWS = tiempoActual;
-                    socket.send(JSON.stringify({ v: parseInt(throttle), w: parseInt(giro) }));
+                    dc.send(JSON.stringify({ v: parseInt(throttle), w: parseInt(giro) }));
                 }
             } else {
-                document.getElementById("telemetry").innerText = "{ Presiona un botón en el mando para activarlo }";
+                document.getElementById("telemetry").innerText = "{ Presiona un botón en el mando para activarlo u oír el audio }";
             }
             requestAnimationFrame(bucleControl);
         }
@@ -204,7 +227,15 @@
             else if (giro < -GIRO_THRESH) img.src = IMAGE_FOLDER + "left.jpg";
         }
 
-        conectarWebSocket();
+        // Activa todo con un clic en cualquier parte por seguridad del navegador
+        window.addEventListener('click', () => {
+            iniciarWebRTC();
+            const videoEl = document.getElementById("robot_feed");
+            videoEl.play().catch(()=>{});
+        });
+
+        // Iniciar enlace automáticamente
+        iniciarWebRTC();
     </script>
 </body>
 </html>

@@ -1,37 +1,38 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os
+import asyncio
 import json
+import os
 import serial
 import threading
 import time
 import cv2
 import pyaudio
-from flask import Flask, request, jsonify, Response
-from flask_sock import Sock
+import av
+import numpy as np
+from fractions import Fraction
+from aiohttp import web
+from aiortc import RTCPeerConnection, RTCSessionDescription, MediaStreamTrack
 
-# CONFIGURACIÓN GENERAL
 CARPETA_ACTUAL = os.path.dirname(os.path.abspath(__file__))
-app = Flask(__name__, static_folder=CARPETA_ACTUAL, static_url_path='')
-sock = Sock(app)
 
 UART_PORT = "/dev/serial0"
 UART_BAUD = 115200
 ser = None
-clientes_conectados = set()
+pcs = set()
+telemetria_actual = {"tipo": "telemetria", "voltaje": "0.0", "porcentaje": "0"}
 
 # CONEXIÓN SERIAL (A ESP32)
 try:
     ser = serial.Serial(UART_PORT, UART_BAUD, timeout=0.1)
     print(f"[*] [SERIAL] Conectado a la ESP32 en ({UART_PORT})")
-except Exception as e:
-    print(f"[!] [SERIAL] Error en GPIO: {e}. Intentando USB (/dev/ttyUSB0)...")
+except Exception:
     try:
         ser = serial.Serial("/dev/ttyUSB0", UART_BAUD, timeout=0.1)
-        print("[*] [SERIAL] ¡Conectado por USB de respaldo!")
-    except Exception as err:
-        print(f"[!] [SERIAL] Modo simulación activo.")
+        print("[*] [SERIAL] Conectado por USB de respaldo.")
+    except Exception:
+        print("[!] Modo simulación activo.")
 
 # ESCÁNER DE CÁMARA
 def inicializar_camara_inteligente():
@@ -41,93 +42,74 @@ def inicializar_camara_inteligente():
             for _ in range(3): ret, frame = test_cap.read()
             if ret and frame is not None and frame.shape[0] > 0:
                 print(f"✨ [CÁMARA] ¡Webcam detectada en /dev/video{index}!")
-                test_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-                test_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
                 return test_cap
         test_cap.release()
     return cv2.VideoCapture(0)
 
 cap = inicializar_camara_inteligente()
 
-# STREAMING DE VIDEO (MJPEG LOCAL)
-def generar_fotogramas_mjpeg():
-    while True:
-        ret, frame = cap.read()
+# =========================================================
+# TRACKS WEBRTC (VIDEO Y AUDIO NATIVOS)
+# =========================================================
+class VideoStreamTrack(MediaStreamTrack):
+    kind = "video"
+    def __init__(self, cap):
+        super().__init__()
+        self.cap = cap
+        self.pts = 0
+
+    async def recv(self):
+        loop = asyncio.get_event_loop()
+        ret, frame = await loop.run_in_executor(None, self.cap.read)
         if not ret or frame is None:
-            time.sleep(0.03)
-            continue
-        ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-        if not ret: continue
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-        time.sleep(0.03)
-
-@app.route('/video_feed')
-def video_feed():
-    return Response(generar_fotogramas_mjpeg(), mimetype='multipart/x-mixed-replace; boundary=frame')
-
-# 🔥 NUEVO: TUNEL DE AUDIO CON DETECTOR AUTOMÁTICO DE MICRÓFONO USB
-@sock.route('/audio')
-def canal_audio(ws):
-    print("[*] [AUDIO] Intentando abrir canal de sonido...")
-    p = pyaudio.PyAudio()
-    CHUNKS = 1024
-    dispositivo_index = None
-
-    # 🔎 ESCÁNER DE MICRÓFONOS EN LINUX
-    try:
-        conteo = p.get_device_count()
-        print(f"[AUDIO] Escaneando {conteo} dispositivos de audio disponibles...")
-        for i in range(conteo):
-            info = p.get_device_info_by_index(i)
-            nombre = info.get('name', '').lower()
-            canales_entrada = info.get('maxInputChannels', 0)
-            
-            # Si tiene canales de entrada, es un micrófono
-            if canales_entrada > 0:
-                print(f"   🎤 ID {i}: {info.get('name')} (Entradas: {canales_entrada})")
-                # Si el nombre dice USB o Cam, asumimos que es el de la webcam
-                if "usb" in nombre or "cam" in nombre or "audio" in nombre or "mic" in nombre:
-                    dispositivo_index = i
-
-        if dispositivo_index is not None:
-            print(f"🎯 [AUDIO] ¡Target fijado! Usando micrófono USB de la cámara (ID: {dispositivo_index})")
+            await asyncio.sleep(0.03)
+            frame = np.zeros((480, 640, 3), dtype=np.uint8)
         else:
-            print("⚠️ [AUDIO] No se detectó micrófono USB explícito. Usando el predeterminado del sistema.")
-    except Exception as e:
-        print(f"[!] Error al escanear hardware de audio: {e}")
+            frame = cv2.resize(frame, (640, 480))
+        
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        video_frame = av.VideoFrame.from_ndarray(frame_rgb, format="rgb24")
+        self.pts += 1
+        video_frame.pts = self.pts
+        video_frame.time_base = Fraction(1, 30)
+        return video_frame
 
-    # ABRIR STREAM CON EL ID CORRECTO
-    try:
-        stream = p.open(
-            format=pyaudio.paInt16,
-            channels=1,
-            rate=16000,
-            input=True,
-            input_device_index=dispositivo_index, # <-- Forzamos el ID mapeado
-            frames_per_buffer=CHUNKS
-        )
-        print("[*] [AUDIO] ¡Micrófono transmitiendo con éxito!")
-    except Exception as e:
-        print(f"[!] [AUDIO] Error crítico al abrir el hardware de audio: {e}")
-        p.terminate()
-        return
-
-    try:
-        while True:
-            datos_audio = stream.read(CHUNKS, exception_on_overflow=False)
-            ws.send(datos_audio)
-    except Exception: pass
-    finally:
-        print("[-] [AUDIO] Canal de sonido cerrado.")
+class AudioStreamTrack(MediaStreamTrack):
+    kind = "audio"
+    def __init__(self):
+        super().__init__()
+        self.p = pyaudio.PyAudio()
         try:
-            stream.stop_stream()
-            stream.close()
-        except: pass
-        p.terminate()
+            self.stream = self.p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=960)
+            print("[*] [AUDIO] Micrófono físico acoplado a WebRTC.")
+        except Exception as e:
+            print(f"[!] No se detectó micrófono físico: {e}. Enviando silencio.")
+            self.stream = None
+        self.pts = 0
 
-# TELEMETRÍA DE BATERÍA
+    async def recv(self):
+        if self.stream is None:
+            await asyncio.sleep(0.06)
+            frame = av.AudioFrame(format='s16', layout='mono', samples=960)
+            frame.sample_rate = 16000
+            self.pts += 960
+            frame.pts = self.pts
+            frame.time_base = Fraction(1, 16000)
+            return frame
+
+        loop = asyncio.get_event_loop()
+        data = await loop.run_in_executor(None, self.stream.read, 960, False)
+        frame = av.AudioFrame(format='s16', layout='mono', samples=960)
+        frame.sample_rate = 16000
+        frame.planes[0].update(data)
+        self.pts += 960
+        frame.pts = self.pts
+        frame.time_base = Fraction(1, 16000)
+        return frame
+
+# HILO TELEMETRÍA ESP32
 def escuchar_esp32_bateria():
+    global telemetria_actual
     while True:
         if ser and ser.is_open:
             try:
@@ -136,37 +118,76 @@ def escuchar_esp32_bateria():
                     if linea.startswith("<b,") and linea.endswith(">"):
                         datos = linea[3:-1].split(',')
                         if len(datos) == 2:
-                            paquete_web = json.dumps({"tipo": "telemetria", "voltaje": datos[0], "porcentaje": datos[1]})
-                            for ws in list(clientes_conectados):
-                                try: ws.send(paquete_web)
-                                except Exception: clientes_conectados.remove(ws)
+                            telemetria_actual = {"tipo": "telemetria", "voltaje": datos[0], "porcentaje": datos[1]}
             except Exception: pass
         time.sleep(0.01)
 
 threading.Thread(target=escuchar_esp32_bateria, daemon=True).start()
 
-# CANAL DE MANDOS
-@sock.route('/robot')
-def canal_robot(ws):
-    print("[*] [WEBSOCKET] Mando conectado localmente.")
-    clientes_conectados.add(ws)
-    try:
-        while True:
-            mensaje = ws.receive()
-            if not mensaje: break
+# =========================================================
+# RUTAS DEL SERVIDOR INTERNET / LOCAL
+# =========================================================
+async def index(request):
+    return web.FileResponse(os.path.join(CARPETA_ACTUAL, 'index.html'))
+
+async def offer(request):
+    params = await request.json()
+    offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
+    pc = RTCPeerConnection()
+    pcs.add(pc)
+
+    @pc.on("connectionstatechange")
+    async def on_connectionstatechange():
+        if pc.connectionState in ["failed", "closed"]:
+            await pc.close()
+            pcs.discard(pc)
+
+    # Añadimos los canales multimedia directos
+    pc.addTrack(VideoStreamTrack(cap))
+    pc.addTrack(AudioStreamTrack())
+
+    # Data Channel para Mandos y Telemetría rápida
+    @pc.on("datachannel")
+    def on_datachannel(channel):
+        @channel.on("message")
+        def on_message(message):
             try:
-                datos = json.loads(mensaje)
+                datos = json.loads(message)
                 v = max(-1000, min(1000, int(datos.get("v", 0))))
                 w = max(-1000, min(1000, int(datos.get("w", 0))))
                 if ser and ser.is_open:
                     ser.write(f"<{v},{w}>\n".encode('utf-8'))
             except Exception: pass
-    finally:
-        if ws in clientes_conectados: clientes_conectados.remove(ws)
 
-@app.route('/')
-def index():
-    return app.send_static_file('index.html')
+        async def enviar_telemetria_loop():
+            ultimo_pct = ""
+            while channel.readyState == "open":
+                global telemetria_actual
+                if telemetria_actual.get("porcentaje") != ultimo_pct:
+                    try:
+                        channel.send(json.dumps(telemetria_actual))
+                        ultimo_pct = telemetria_actual.get("porcentaje")
+                    except Exception: break
+                await asyncio.sleep(0.2)
+
+        asyncio.create_task(enviar_telemetria_loop())
+
+    await pc.setRemoteDescription(offer)
+    answer = await pc.createAnswer()
+    await pc.setLocalDescription(answer)
+    return web.json_response({"sdp": pc.localDescription.sdp, "type": pc.localDescription.type})
+
+async def al_cerrar(app):
+    coros = [pc.close() for pc in pcs]
+    await asyncio.gather(*coros)
+    pcs.clear()
+    cap.release()
+
+app = web.Application()
+app.router.add_get('/', index)
+app.router.add_post('/offer', offer)
+app.router.add_static('/imgs/', path=os.path.join(CARPETA_ACTUAL, 'imgs'))
+app.on_shutdown.append(al_cerrar)
 
 if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=8000, debug=False)
+    web.run_app(app, host='0.0.0.0', port=8000)
