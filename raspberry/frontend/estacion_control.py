@@ -56,7 +56,6 @@ def generar_fotogramas_mjpeg():
         if not ret or frame is None:
             time.sleep(0.03)
             continue
-        # Aquí le subimos la calidad al 85% porque en red local nos sobra ancho de banda
         ret, buffer = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
         if not ret: continue
         yield (b'--frame\r\n'
@@ -67,26 +66,64 @@ def generar_fotogramas_mjpeg():
 def video_feed():
     return Response(generar_fotogramas_mjpeg(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
-# TUNEL DE AUDIO LOCAL (MICRÓFONO)
+# 🔥 NUEVO: TUNEL DE AUDIO CON DETECTOR AUTOMÁTICO DE MICRÓFONO USB
 @sock.route('/audio')
 def canal_audio(ws):
-    print("[*] [AUDIO] Canal de sonido abierto en red local.")
+    print("[*] [AUDIO] Intentando abrir canal de sonido...")
     p = pyaudio.PyAudio()
     CHUNKS = 1024
+    dispositivo_index = None
+
+    # 🔎 ESCÁNER DE MICRÓFONOS EN LINUX
     try:
-        stream = p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=CHUNKS)
+        conteo = p.get_device_count()
+        print(f"[AUDIO] Escaneando {conteo} dispositivos de audio disponibles...")
+        for i in range(conteo):
+            info = p.get_device_info_by_index(i)
+            nombre = info.get('name', '').lower()
+            canales_entrada = info.get('maxInputChannels', 0)
+            
+            # Si tiene canales de entrada, es un micrófono
+            if canales_entrada > 0:
+                print(f"   🎤 ID {i}: {info.get('name')} (Entradas: {canales_entrada})")
+                # Si el nombre dice USB o Cam, asumimos que es el de la webcam
+                if "usb" in nombre or "cam" in nombre or "audio" in nombre or "mic" in nombre:
+                    dispositivo_index = i
+
+        if dispositivo_index is not None:
+            print(f"🎯 [AUDIO] ¡Target fijado! Usando micrófono USB de la cámara (ID: {dispositivo_index})")
+        else:
+            print("⚠️ [AUDIO] No se detectó micrófono USB explícito. Usando el predeterminado del sistema.")
     except Exception as e:
-        print(f"[!] [AUDIO] Error en micrófono físico: {e}")
+        print(f"[!] Error al escanear hardware de audio: {e}")
+
+    # ABRIR STREAM CON EL ID CORRECTO
+    try:
+        stream = p.open(
+            format=pyaudio.paInt16,
+            channels=1,
+            rate=16000,
+            input=True,
+            input_device_index=dispositivo_index, # <-- Forzamos el ID mapeado
+            frames_per_buffer=CHUNKS
+        )
+        print("[*] [AUDIO] ¡Micrófono transmitiendo con éxito!")
+    except Exception as e:
+        print(f"[!] [AUDIO] Error crítico al abrir el hardware de audio: {e}")
         p.terminate()
         return
+
     try:
         while True:
             datos_audio = stream.read(CHUNKS, exception_on_overflow=False)
             ws.send(datos_audio)
     except Exception: pass
     finally:
-        stream.stop_stream()
-        stream.close()
+        print("[-] [AUDIO] Canal de sonido cerrado.")
+        try:
+            stream.stop_stream()
+            stream.close()
+        except: pass
         p.terminate()
 
 # TELEMETRÍA DE BATERÍA
@@ -132,5 +169,4 @@ def index():
     return app.send_static_file('index.html')
 
 if __name__ == '__main__':
-    # Levantamos el servidor en el puerto 8000 para toda la red local
     app.run(host='0.0.0.0', port=8000, debug=False)
