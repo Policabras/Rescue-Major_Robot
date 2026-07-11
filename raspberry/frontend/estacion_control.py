@@ -34,7 +34,7 @@ except Exception:
     except Exception:
         print("[!] Modo simulación activo.")
 
-# ESCÁNER DE CÁMARA OPTIMIZADO
+# ESCÁNER DE CÁMARA SEGURO
 def inicializar_camara_inteligente():
     for index in [2, 4, 1, 0, 10, 11, 14]:
         test_cap = cv2.VideoCapture(index)
@@ -42,21 +42,14 @@ def inicializar_camara_inteligente():
             for _ in range(3): ret, frame = test_cap.read()
             if ret and frame is not None and frame.shape[0] > 0:
                 print(f"✨ [CÁMARA] ¡Webcam detectada en /dev/video{index}!")
-                # Configuración de tamaño óptimo para ahorrar CPU en la Rasp
-                test_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
-                test_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
                 return test_cap
         test_cap.release()
-    
-    fallback = cv2.VideoCapture(0)
-    fallback.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
-    fallback.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
-    return fallback
+    return cv2.VideoCapture(0)
 
 cap = inicializar_camara_inteligente()
 
 # =========================================================
-# TRACKS WEBRTC (PROCESAMIENTO ULTRA RÁPIDO)
+# TRACKS WEBRTC (PROCESAMIENTO OPTIMIZADO)
 # =========================================================
 class VideoStreamTrack(MediaStreamTrack):
     kind = "video"
@@ -69,8 +62,11 @@ class VideoStreamTrack(MediaStreamTrack):
         loop = asyncio.get_event_loop()
         ret, frame = await loop.run_in_executor(None, self.cap.read)
         if not ret or frame is None:
-            await asyncio.sleep(0.04) # ~25 FPS para no ahogar el procesador
+            await asyncio.sleep(0.04) # ~25 FPS
             frame = np.zeros((360, 480, 3), dtype=np.uint8)
+        else:
+            # Redimensionamos aquí por software para evitar errores de GStreamer
+            frame = cv2.resize(frame, (480, 360))
         
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         video_frame = av.VideoFrame.from_ndarray(frame_rgb, format="rgb24")
@@ -103,14 +99,13 @@ class AudioStreamTrack(MediaStreamTrack):
 
         if index_micro is not None:
             try:
-                # Cambiado a 48000 Hz nativos de WebRTC para eliminar distorsión
                 self.stream = self.p.open(
                     format=pyaudio.paInt16, 
                     channels=1, 
                     rate=48000, 
                     input=True, 
                     input_device_index=index_micro,
-                    frames_per_buffer=960 # 960 muestras a 48kHz = 20ms exactos (Perfecto para WebRTC)
+                    frames_per_buffer=960
                 )
                 print(f"✨ [AUDIO] ¡Micrófono USB acoplado a 48kHz en ID [{index_micro}]!")
             except Exception as e:
@@ -131,7 +126,6 @@ class AudioStreamTrack(MediaStreamTrack):
 
         loop = asyncio.get_event_loop()
         try:
-            # exception_on_overflow=False evita que el audio se trabe si la Rasp se cansa
             data = await loop.run_in_executor(None, self.stream.read, 960, False)
         except Exception:
             data = b'\x00' * 1920
@@ -170,7 +164,7 @@ async def index(request):
 async def offer(request):
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
-    pc = RTPeerConnection()
+    pc = RTCPeerConnection()  # <-- ¡CORREGIDO AQUÍ!
     pcs.add(pc)
 
     @pc.on("connectionstatechange")
