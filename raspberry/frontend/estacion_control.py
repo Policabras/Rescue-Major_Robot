@@ -79,13 +79,44 @@ class AudioStreamTrack(MediaStreamTrack):
     def __init__(self):
         super().__init__()
         self.p = pyaudio.PyAudio()
-        try:
-            self.stream = self.p.open(format=pyaudio.paInt16, channels=1, rate=16000, input=True, frames_per_buffer=960)
-            print("[*] [AUDIO] Micrófono físico acoplado a WebRTC.")
-        except Exception as e:
-            print(f"[!] No se detectó micrófono físico: {e}. Enviando silencio.")
-            self.stream = None
+        self.stream = None
         self.pts = 0
+        
+        # 🎤 ESCÁNER INTELIGENTE DE MICRÓFONOS USB
+        index_micro = None
+        print("[*] [AUDIO] Buscando hardware de entrada de voz...")
+        for i in range(self.p.get_device_count()):
+            try:
+                info = self.p.get_device_info_by_index(i)
+                # Si tiene canales de entrada, es un micrófono potencial
+                if info.get('maxInputChannels', 0) > 0:
+                    nombre = info.get('name', '').lower()
+                    print(f"    -> Encontrado ID {i}: {info.get('name')}")
+                    # Priorizamos si el nombre dice usb o mic
+                    if "usb" in nombre or "mic" in nombre or "webcam" in nombre or "audio" in nombre:
+                        index_micro = i
+                        break
+                    if index_micro is None:
+                        index_micro = i
+            except Exception: pass
+
+        if index_micro is not None:
+            try:
+                # Forzamos a PyAudio a abrir el índice exacto del micrófono USB
+                self.stream = self.p.open(
+                    format=pyaudio.paInt16, 
+                    channels=1, 
+                    rate=16000, 
+                    input=True, 
+                    input_device_index=index_micro,
+                    frames_per_buffer=960
+                )
+                print(f"✨ [AUDIO] ¡Micrófono USB acoplado con éxito en el índice [{index_micro}]!")
+            except Exception as e:
+                print(f"[!] Error al abrir micrófono en índice {index_micro}: {e}")
+        
+        if self.stream is None:
+            print("[!] Advertencia: No se detectó micrófono físico real. Enviando silencio de respaldo.")
 
     async def recv(self):
         if self.stream is None:
@@ -98,7 +129,11 @@ class AudioStreamTrack(MediaStreamTrack):
             return frame
 
         loop = asyncio.get_event_loop()
-        data = await loop.run_in_executor(None, self.stream.read, 960, False)
+        try:
+            data = await loop.run_in_executor(None, self.stream.read, 960, False)
+        except Exception:
+            data = b'\x00' * 1920 # Silencio si hay un pequeño corte/overflow
+            
         frame = av.AudioFrame(format='s16', layout='mono', samples=960)
         frame.sample_rate = 16000
         frame.planes[0].update(data)
@@ -125,7 +160,7 @@ def escuchar_esp32_bateria():
 threading.Thread(target=escuchar_esp32_bateria, daemon=True).start()
 
 # =========================================================
-# RUTAS DEL SERVIDOR INTERNET / LOCAL
+# RUTAS DEL SERVIDOR LOCAL
 # =========================================================
 async def index(request):
     return web.FileResponse(os.path.join(CARPETA_ACTUAL, 'index.html'))
@@ -142,11 +177,9 @@ async def offer(request):
             await pc.close()
             pcs.discard(pc)
 
-    # Añadimos los canales multimedia directos
     pc.addTrack(VideoStreamTrack(cap))
     pc.addTrack(AudioStreamTrack())
 
-    # Data Channel para Mandos y Telemetría rápida
     @pc.on("datachannel")
     def on_datachannel(channel):
         @channel.on("message")
