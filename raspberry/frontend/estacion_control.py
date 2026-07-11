@@ -49,7 +49,7 @@ def inicializar_camara_inteligente():
 cap = inicializar_camara_inteligente()
 
 # =========================================================
-# TRACKS WEBRTC (PROCESAMIENTO OPTIMIZADO)
+# TRACKS WEBRTC (PROCESAMIENTO ASÍNCRONO PARALELO)
 # =========================================================
 class VideoStreamTrack(MediaStreamTrack):
     kind = "video"
@@ -62,7 +62,7 @@ class VideoStreamTrack(MediaStreamTrack):
         loop = asyncio.get_event_loop()
         ret, frame = await loop.run_in_executor(None, self.cap.read)
         if not ret or frame is None:
-            await asyncio.sleep(0.04) # ~25 FPS
+            await asyncio.sleep(0.04)
             frame = np.zeros((360, 480, 3), dtype=np.uint8)
         else:
             frame = cv2.resize(frame, (480, 360))
@@ -76,15 +76,17 @@ class VideoStreamTrack(MediaStreamTrack):
 
 class AudioStreamTrack(MediaStreamTrack):
     kind = "audio"
-    def __init__(self):
+    def __init__(self, loop):
         super().__init__()
+        self.loop = loop
         self.p = pyaudio.PyAudio()
+        self.queue = asyncio.Queue()
         self.stream = None
         self.pts = 0
         
-        # Valores base por si todo falla
-        self.rate = 16000
-        self.samples = 320 
+        # Bajamos a 8000 Hz para ultra-ligereza. 160 muestras = 20ms exactos.
+        self.rate = 8000
+        self.samples = 160 
         
         index_micro = None
         print("[*] [AUDIO] Buscando hardware de entrada de voz...")
@@ -101,44 +103,43 @@ class AudioStreamTrack(MediaStreamTrack):
             except Exception: pass
 
         if index_micro is not None:
-            # 🎤 PROBADOR DINÁMICO DE FRECUENCIAS PARA WEBCAMS
-            for rate_test in [16000, 44100, 48000]:
-                try:
-                    # Calculamos muestras para una ventana exacta de 20ms (lo que pide WebRTC)
-                    samples_test = int(rate_test * 0.02) 
-                    self.stream = self.p.open(
-                        format=pyaudio.paInt16, 
-                        channels=1, 
-                        rate=rate_test, 
-                        input=True, 
-                        input_device_index=index_micro,
-                        frames_per_buffer=samples_test
-                    )
-                    self.rate = rate_test
-                    self.samples = samples_test
-                    print(f"✨ [AUDIO] ¡Micrófono de la Webcam acoplado a {self.rate}Hz con {self.samples} muestras en ID [{index_micro}]!")
-                    break
-                except Exception:
-                    continue
+            try:
+                self.stream = self.p.open(
+                    format=pyaudio.paInt16, 
+                    channels=1, 
+                    rate=self.rate, 
+                    input=True, 
+                    input_device_index=index_micro,
+                    frames_per_buffer=self.samples
+                )
+                print(f"✨ [AUDIO] ¡Micrófono acoplado en ID [{index_micro}] a {self.rate}Hz!")
+                
+                # Lanzamos el hilo dedicado para capturar audio sin bloquear la CPU principal
+                threading.Thread(target=self._capturar_audio_loop, daemon=True).start()
+            except Exception as e:
+                print(f"[!] Error al abrir micrófono: {e}")
         
         if self.stream is None:
-            print("[!] Advertencia: No se pudo abrir el micrófono de la cámara. Usando silencio.")
+            print("[!] Usando silencio de respaldo.")
+
+    def _capturar_audio_loop(self):
+        """ Corre en su propio hilo de Linux capturando de la tarjeta USB sin parar """
+        while self.stream and self.stream.is_active():
+            try:
+                # exception_on_overflow=False evita los chasquidos por retraso
+                data = self.stream.read(self.samples, exception_on_overflow=False)
+                # Pasamos los bytes de forma segura del hilo secundario a la cola asíncrona principal
+                self.loop.call_soon_threadsafe(self.queue.put_nowait, data)
+            except Exception:
+                pass
 
     async def recv(self):
         if self.stream is None:
             await asyncio.sleep(0.02)
-            frame = av.AudioFrame(format='s16', layout='mono', samples=self.samples)
-            frame.sample_rate = self.rate
-            self.pts += self.samples
-            frame.pts = self.pts
-            frame.time_base = Fraction(1, self.rate)
-            return frame
-
-        loop = asyncio.get_event_loop()
-        try:
-            data = await loop.run_in_executor(None, self.stream.read, self.samples, False)
-        except Exception:
-            data = b'\x00' * (self.samples * 2) # 2 bytes por muestra (int16)
+            data = b'\x00' * (self.samples * 2)
+        else:
+            # Extrae el audio pre-grabado instantáneamente de la cola sin esperar al hardware
+            data = await self.queue.get()
             
         frame = av.AudioFrame(format='s16', layout='mono', samples=self.samples)
         frame.sample_rate = self.rate
@@ -183,8 +184,11 @@ async def offer(request):
             await pc.close()
             pcs.discard(pc)
 
+    # Obtenemos el bucle asíncrono actual para heredárselo al hilo del micrófono
+    loop = asyncio.get_event_loop()
+
     pc.addTrack(VideoStreamTrack(cap))
-    pc.addTrack(AudioStreamTrack())
+    pc.addTrack(AudioStreamTrack(loop))
 
     @pc.on("datachannel")
     def on_datachannel(channel):
