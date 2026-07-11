@@ -34,7 +34,7 @@ except Exception:
     except Exception:
         print("[!] Modo simulación activo.")
 
-# ESCÁNER DE CÁMARA
+# ESCÁNER DE CÁMARA OPTIMIZADO
 def inicializar_camara_inteligente():
     for index in [2, 4, 1, 0, 10, 11, 14]:
         test_cap = cv2.VideoCapture(index)
@@ -42,14 +42,21 @@ def inicializar_camara_inteligente():
             for _ in range(3): ret, frame = test_cap.read()
             if ret and frame is not None and frame.shape[0] > 0:
                 print(f"✨ [CÁMARA] ¡Webcam detectada en /dev/video{index}!")
+                # Configuración de tamaño óptimo para ahorrar CPU en la Rasp
+                test_cap.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
+                test_cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
                 return test_cap
         test_cap.release()
-    return cv2.VideoCapture(0)
+    
+    fallback = cv2.VideoCapture(0)
+    fallback.set(cv2.CAP_PROP_FRAME_WIDTH, 480)
+    fallback.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+    return fallback
 
 cap = inicializar_camara_inteligente()
 
 # =========================================================
-# TRACKS WEBRTC (VIDEO Y AUDIO NATIVOS)
+# TRACKS WEBRTC (PROCESAMIENTO ULTRA RÁPIDO)
 # =========================================================
 class VideoStreamTrack(MediaStreamTrack):
     kind = "video"
@@ -62,16 +69,14 @@ class VideoStreamTrack(MediaStreamTrack):
         loop = asyncio.get_event_loop()
         ret, frame = await loop.run_in_executor(None, self.cap.read)
         if not ret or frame is None:
-            await asyncio.sleep(0.03)
-            frame = np.zeros((480, 640, 3), dtype=np.uint8)
-        else:
-            frame = cv2.resize(frame, (640, 480))
+            await asyncio.sleep(0.04) # ~25 FPS para no ahogar el procesador
+            frame = np.zeros((360, 480, 3), dtype=np.uint8)
         
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         video_frame = av.VideoFrame.from_ndarray(frame_rgb, format="rgb24")
         self.pts += 1
         video_frame.pts = self.pts
-        video_frame.time_base = Fraction(1, 30)
+        video_frame.time_base = Fraction(1, 25)
         return video_frame
 
 class AudioStreamTrack(MediaStreamTrack):
@@ -82,64 +87,61 @@ class AudioStreamTrack(MediaStreamTrack):
         self.stream = None
         self.pts = 0
         
-        # 🎤 ESCÁNER INTELIGENTE DE MICRÓFONOS USB
         index_micro = None
         print("[*] [AUDIO] Buscando hardware de entrada de voz...")
         for i in range(self.p.get_device_count()):
             try:
                 info = self.p.get_device_info_by_index(i)
-                # Si tiene canales de entrada, es un micrófono potencial
                 if info.get('maxInputChannels', 0) > 0:
                     nombre = info.get('name', '').lower()
                     print(f"    -> Encontrado ID {i}: {info.get('name')}")
-                    # Priorizamos si el nombre dice usb o mic
                     if "usb" in nombre or "mic" in nombre or "webcam" in nombre or "audio" in nombre:
                         index_micro = i
                         break
-                    if index_micro is None:
-                        index_micro = i
+                    if index_micro is None: index_micro = i
             except Exception: pass
 
         if index_micro is not None:
             try:
-                # Forzamos a PyAudio a abrir el índice exacto del micrófono USB
+                # Cambiado a 48000 Hz nativos de WebRTC para eliminar distorsión
                 self.stream = self.p.open(
                     format=pyaudio.paInt16, 
                     channels=1, 
-                    rate=16000, 
+                    rate=48000, 
                     input=True, 
                     input_device_index=index_micro,
-                    frames_per_buffer=960
+                    frames_per_buffer=960 # 960 muestras a 48kHz = 20ms exactos (Perfecto para WebRTC)
                 )
-                print(f"✨ [AUDIO] ¡Micrófono USB acoplado con éxito en el índice [{index_micro}]!")
+                print(f"✨ [AUDIO] ¡Micrófono USB acoplado a 48kHz en ID [{index_micro}]!")
             except Exception as e:
-                print(f"[!] Error al abrir micrófono en índice {index_micro}: {e}")
+                print(f"[!] Error al abrir micrófono: {e}")
         
         if self.stream is None:
-            print("[!] Advertencia: No se detectó micrófono físico real. Enviando silencio de respaldo.")
+            print("[!] Usando silencio de respaldo.")
 
     async def recv(self):
         if self.stream is None:
-            await asyncio.sleep(0.06)
+            await asyncio.sleep(0.02)
             frame = av.AudioFrame(format='s16', layout='mono', samples=960)
-            frame.sample_rate = 16000
+            frame.sample_rate = 48000
             self.pts += 960
             frame.pts = self.pts
-            frame.time_base = Fraction(1, 16000)
+            frame.time_base = Fraction(1, 48000)
             return frame
 
         loop = asyncio.get_event_loop()
         try:
+            # exception_on_overflow=False evita que el audio se trabe si la Rasp se cansa
             data = await loop.run_in_executor(None, self.stream.read, 960, False)
         except Exception:
-            data = b'\x00' * 1920 # Silencio si hay un pequeño corte/overflow
+            data = b'\x00' * 1920
             
         frame = av.AudioFrame(format='s16', layout='mono', samples=960)
-        frame.sample_rate = 16000
+        frame.sample_rate = 48000
         frame.planes[0].update(data)
         self.pts += 960
         frame.pts = self.pts
-        frame.time_base = Fraction(1, 16000)
+        frame.time_base = Fraction(1, 48000)
         return frame
 
 # HILO TELEMETRÍA ESP32
@@ -168,7 +170,7 @@ async def index(request):
 async def offer(request):
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
-    pc = RTCPeerConnection()
+    pc = RTPeerConnection()
     pcs.add(pc)
 
     @pc.on("connectionstatechange")
