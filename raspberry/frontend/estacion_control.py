@@ -65,7 +65,6 @@ class VideoStreamTrack(MediaStreamTrack):
             await asyncio.sleep(0.04) # ~25 FPS
             frame = np.zeros((360, 480, 3), dtype=np.uint8)
         else:
-            # Redimensionamos aquí por software para evitar errores de GStreamer
             frame = cv2.resize(frame, (480, 360))
         
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -83,6 +82,10 @@ class AudioStreamTrack(MediaStreamTrack):
         self.stream = None
         self.pts = 0
         
+        # Valores base por si todo falla
+        self.rate = 16000
+        self.samples = 320 
+        
         index_micro = None
         print("[*] [AUDIO] Buscando hardware de entrada de voz...")
         for i in range(self.p.get_device_count()):
@@ -98,44 +101,51 @@ class AudioStreamTrack(MediaStreamTrack):
             except Exception: pass
 
         if index_micro is not None:
-            try:
-                self.stream = self.p.open(
-                    format=pyaudio.paInt16, 
-                    channels=1, 
-                    rate=48000, 
-                    input=True, 
-                    input_device_index=index_micro,
-                    frames_per_buffer=960
-                )
-                print(f"✨ [AUDIO] ¡Micrófono USB acoplado a 48kHz en ID [{index_micro}]!")
-            except Exception as e:
-                print(f"[!] Error al abrir micrófono: {e}")
+            # 🎤 PROBADOR DINÁMICO DE FRECUENCIAS PARA WEBCAMS
+            for rate_test in [16000, 44100, 48000]:
+                try:
+                    # Calculamos muestras para una ventana exacta de 20ms (lo que pide WebRTC)
+                    samples_test = int(rate_test * 0.02) 
+                    self.stream = self.p.open(
+                        format=pyaudio.paInt16, 
+                        channels=1, 
+                        rate=rate_test, 
+                        input=True, 
+                        input_device_index=index_micro,
+                        frames_per_buffer=samples_test
+                    )
+                    self.rate = rate_test
+                    self.samples = samples_test
+                    print(f"✨ [AUDIO] ¡Micrófono de la Webcam acoplado a {self.rate}Hz con {self.samples} muestras en ID [{index_micro}]!")
+                    break
+                except Exception:
+                    continue
         
         if self.stream is None:
-            print("[!] Usando silencio de respaldo.")
+            print("[!] Advertencia: No se pudo abrir el micrófono de la cámara. Usando silencio.")
 
     async def recv(self):
         if self.stream is None:
             await asyncio.sleep(0.02)
-            frame = av.AudioFrame(format='s16', layout='mono', samples=960)
-            frame.sample_rate = 48000
-            self.pts += 960
+            frame = av.AudioFrame(format='s16', layout='mono', samples=self.samples)
+            frame.sample_rate = self.rate
+            self.pts += self.samples
             frame.pts = self.pts
-            frame.time_base = Fraction(1, 48000)
+            frame.time_base = Fraction(1, self.rate)
             return frame
 
         loop = asyncio.get_event_loop()
         try:
-            data = await loop.run_in_executor(None, self.stream.read, 960, False)
+            data = await loop.run_in_executor(None, self.stream.read, self.samples, False)
         except Exception:
-            data = b'\x00' * 1920
+            data = b'\x00' * (self.samples * 2) # 2 bytes por muestra (int16)
             
-        frame = av.AudioFrame(format='s16', layout='mono', samples=960)
-        frame.sample_rate = 48000
+        frame = av.AudioFrame(format='s16', layout='mono', samples=self.samples)
+        frame.sample_rate = self.rate
         frame.planes[0].update(data)
-        self.pts += 960
+        self.pts += self.samples
         frame.pts = self.pts
-        frame.time_base = Fraction(1, 48000)
+        frame.time_base = Fraction(1, self.rate)
         return frame
 
 # HILO TELEMETRÍA ESP32
@@ -164,7 +174,7 @@ async def index(request):
 async def offer(request):
     params = await request.json()
     offer = RTCSessionDescription(sdp=params["sdp"], type=params["type"])
-    pc = RTCPeerConnection()  # <-- ¡CORREGIDO AQUÍ!
+    pc = RTCPeerConnection()
     pcs.add(pc)
 
     @pc.on("connectionstatechange")
