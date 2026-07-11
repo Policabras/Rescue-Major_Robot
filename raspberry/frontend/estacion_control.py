@@ -49,7 +49,7 @@ def inicializar_camara_inteligente():
 cap = inicializar_camara_inteligente()
 
 # =========================================================
-# TRACKS WEBRTC (PROCESAMIENTO ASÍNCRONO PARALELO)
+# TRACKS WEBRTC (PROCESAMIENTO AISLADO EN HILOS)
 # =========================================================
 class VideoStreamTrack(MediaStreamTrack):
     kind = "video"
@@ -62,7 +62,7 @@ class VideoStreamTrack(MediaStreamTrack):
         loop = asyncio.get_event_loop()
         ret, frame = await loop.run_in_executor(None, self.cap.read)
         if not ret or frame is None:
-            await asyncio.sleep(0.04)
+            await asyncio.sleep(0.04) # ~25 FPS
             frame = np.zeros((360, 480, 3), dtype=np.uint8)
         else:
             frame = cv2.resize(frame, (480, 360))
@@ -84,9 +84,9 @@ class AudioStreamTrack(MediaStreamTrack):
         self.stream = None
         self.pts = 0
         
-        # Bajamos a 8000 Hz para ultra-ligereza. 160 muestras = 20ms exactos.
-        self.rate = 8000
-        self.samples = 160 
+        # Configuración ideal para el micro de tu cámara (16000Hz)
+        self.rate = 16000
+        self.samples = 320 # 320 muestras a 16kHz equivalen a paquetes perfectos de 20ms para WebRTC
         
         index_micro = None
         print("[*] [AUDIO] Buscando hardware de entrada de voz...")
@@ -103,32 +103,37 @@ class AudioStreamTrack(MediaStreamTrack):
             except Exception: pass
 
         if index_micro is not None:
-            try:
-                self.stream = self.p.open(
-                    format=pyaudio.paInt16, 
-                    channels=1, 
-                    rate=self.rate, 
-                    input=True, 
-                    input_device_index=index_micro,
-                    frames_per_buffer=self.samples
-                )
-                print(f"✨ [AUDIO] ¡Micrófono acoplado en ID [{index_micro}] a {self.rate}Hz!")
-                
-                # Lanzamos el hilo dedicado para capturar audio sin bloquear la CPU principal
-                threading.Thread(target=self._capturar_audio_loop, daemon=True).start()
-            except Exception as e:
-                print(f"[!] Error al abrir micrófono: {e}")
+            # Probamos frecuencias compatibles empezando por la que sí soporta tu hardware
+            for rate_test in [16000, 44100, 48000, 8000]:
+                try:
+                    samples_test = int(rate_test * 0.02)
+                    self.stream = self.p.open(
+                        format=pyaudio.paInt16, 
+                        channels=1, 
+                        rate=rate_test, 
+                        input=True, 
+                        input_device_index=index_micro,
+                        frames_per_buffer=samples_test
+                    )
+                    self.rate = rate_test
+                    self.samples = samples_test
+                    print(f"✨ [AUDIO] ¡Micrófono USB abierto con éxito a {self.rate}Hz en ID [{index_micro}]!")
+                    
+                    # Encendemos el hilo de fondo para capturar audio de forma independiente
+                    threading.Thread(target=self._capturar_audio_loop, daemon=True).start()
+                    break
+                except Exception:
+                    continue
         
         if self.stream is None:
-            print("[!] Usando silencio de respaldo.")
+            print("[!] No se pudo abrir el micrófono en ninguna velocidad. Usando silencio.")
 
     def _capturar_audio_loop(self):
-        """ Corre en su propio hilo de Linux capturando de la tarjeta USB sin parar """
+        """ Captura datos del hardware de forma continua sin trabar el hilo principal """
         while self.stream and self.stream.is_active():
             try:
-                # exception_on_overflow=False evita los chasquidos por retraso
                 data = self.stream.read(self.samples, exception_on_overflow=False)
-                # Pasamos los bytes de forma segura del hilo secundario a la cola asíncrona principal
+                # Envía los bytes desde este hilo secundario hacia la cola asíncrona principal de WebRTC
                 self.loop.call_soon_threadsafe(self.queue.put_nowait, data)
             except Exception:
                 pass
@@ -138,7 +143,7 @@ class AudioStreamTrack(MediaStreamTrack):
             await asyncio.sleep(0.02)
             data = b'\x00' * (self.samples * 2)
         else:
-            # Extrae el audio pre-grabado instantáneamente de la cola sin esperar al hardware
+            # Extrae el audio de la cola al instante, sin esperas ni pausas de CPU
             data = await self.queue.get()
             
         frame = av.AudioFrame(format='s16', layout='mono', samples=self.samples)
@@ -184,7 +189,7 @@ async def offer(request):
             await pc.close()
             pcs.discard(pc)
 
-    # Obtenemos el bucle asíncrono actual para heredárselo al hilo del micrófono
+    # Capturamos el loop asíncrono actual para pasárselo al hilo del audio
     loop = asyncio.get_event_loop()
 
     pc.addTrack(VideoStreamTrack(cap))
