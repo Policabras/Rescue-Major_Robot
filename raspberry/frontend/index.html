@@ -1,516 +1,192 @@
 <!DOCTYPE html>
-<html lang="es">
+<html lang="en">
 <head>
-<meta charset="UTF-8">
-<title>Robot Control Panel</title>
-
-<style>
-
-body {
-    font-family: Arial, sans-serif;
-    background: #121212;
-    color: white;
-    margin: 0;
-    height: 100vh;
-    overflow: hidden;
-}
-
-
-.main-container {
-
-    display: flex;
-    flex-direction: row;
-
-    height: 100vh;
-    width: 100%;
-
-}
-
-
-/* =====================
-   PANEL TELEMETRIA
-===================== */
-
-.left-panel {
-
-    width: 40%;
-
-    display: flex;
-    justify-content: center;
-    align-items: center;
-
-    background: #0d0d12;
-
-}
-
-
-.panel {
-
-    border: 1px solid #00ffcc;
-
-    padding: 20px;
-
-    border-radius: 8px;
-
-    box-shadow: 0 0 15px rgba(0,255,204,0.2);
-
-    text-align: center;
-
-    width: 350px;
-
-}
-
-
-#status {
-
-    color:#00ffcc;
-
-}
-
-
-pre {
-
-    text-align:left;
-
-    font-size:1.2rem;
-
-    color:white;
-
-    background:#161622;
-
-    padding:10px;
-
-    border-radius:4px;
-
-}
-
-
-
-
-#dynamic_image {
-
-    border:2px solid #00ffcc;
-
-    border-radius:10px;
-
-    margin-top:20px;
-
-}
-
-
-
-/* =====================
-   PANEL CAMARA
-===================== */
-
-
-.right-panel {
-
-    width:60%;
-
-    display:flex;
-
-    justify-content:center;
-
-    align-items:center;
-
-    background:black;
-
-}
-
-
-
-.video-container {
-
-    width:90%;
-
-    height:90%;
-
-    display:flex;
-
-    justify-content:center;
-
-    align-items:center;
-
-}
-
-
-
-video {
-
-    width:100%;
-
-    max-width:900px;
-
-    border:2px solid #00ff00;
-
-    background:black;
-
-    border-radius:8px;
-
-}
-
-
-</style>
-
+    <meta charset="UTF-8">
+    <title>Estación de Control Rover - Unificada</title>
+    <style>
+        body {
+            background-color: #0d0d12;
+            color: #00ffcc;
+            font-family: monospace;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 100vh;
+            margin: 0;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        /* --- VISOR DE CÁMARA MJPEG --- */
+        #robot_feed {
+            width: 440px;
+            height: 330px;
+            background-color: #11111b;
+            border: 2px solid #00ffcc;
+            border-radius: 8px;
+            margin-bottom: 20px;
+            box-shadow: 0 0 20px rgba(0, 255, 204, 0.15);
+            object-fit: cover;
+        }
+        .panel {
+            border: 1px solid #00ffcc;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 0 15px rgba(0, 255, 204, 0.2);
+            text-align: center;
+            width: 350px;
+        }
+        .battery-panel {
+            border: 1px dashed #00ffcc;
+            background: #11111b;
+            padding: 10px;
+            margin-bottom: 15px;
+            border-radius: 4px;
+            font-size: 1.1rem;
+            font-weight: bold;
+        }
+        .low-battery {
+            border-color: #ff3333 !important;
+            color: #ff3333 !important;
+            box-shadow: 0 0 10px rgba(255, 51, 51, 0.3);
+            animation: parpadeo 1s infinite;
+        }
+        pre {
+            text-align: left;
+            font-size: 1.1rem;
+            color: #ffffff;
+            background: #161622;
+            padding: 10px;
+            border-radius: 4px;
+            margin: 0;
+        }
+        #dynamic_image {
+            border: 2px solid #00ffcc;
+            border-radius: 10px;
+            margin-top: 20px;
+        }
+        @keyframes parpadeo {
+            0% { opacity: 1; }
+            50% { opacity: 0.5; }
+            100% { opacity: 1; }
+        }
+    </style>
 </head>
-
-
 <body>
 
-
-<div class="main-container">
-
-
-
-<!-- =====================
-     TELEMETRIA
-===================== -->
-
-<div class="left-panel">
-
-
-<div class="panel">
-
-
-<h2 id="status">
-CONECTANDO AL ROBOT...
-</h2>
-
-
-<pre id="telemetry">
-{ Esperando datos del mando... }
-</pre>
-
-
-<img 
-id="dynamic_image" 
-src="imgs/center.jpg"
-alt="Status"
-width="150">
-
-
-</div>
-
-
-</div>
-
-
-
-
-
-<!-- =====================
-     CAMARA WEBRTC
-===================== -->
-
-<div class="right-panel">
-
-
-<div class="video-container">
-
-
-<video 
-id="video"
-autoplay
-playsinline>
-</video>
-
-
-</div>
-
-
-</div>
-
-
-
-</div>
-
-
-
-
-
-<script>
-
-const pc = new RTCPeerConnection();
-
-
-pc.ontrack = (event) => {
-
-document.getElementById('video').srcObject = event.streams[0];
-
-};
-
-
-
-async function iniciarStreaming() {
-
-
-pc.addTransceiver('video', { direction:'recvonly' });
-
-
-const offer = await pc.createOffer();
-
-
-await pc.setLocalDescription(offer);
-
-
-
-const response = await fetch('/offer', {
-
-method:'POST',
-
-headers:{
-'Content-Type':'application/json'
-},
-
-
-body:JSON.stringify({
-
-sdp:pc.localDescription.sdp,
-
-type:pc.localDescription.type
-
-})
-
-
-});
-
-
-
-const answer = await response.json();
-
-
-await pc.setRemoteDescription(
-
-new RTCSessionDescription(answer)
-
-);
-
-
-}
-
-
-
-window.onload = iniciarStreaming;
-
-
-</script>
-
-
-
-
-
-<script>
-
-const WS_URL = "ws://" + window.location.host + "/robot";
-
-const IMAGE_FOLDER = "imgs/";
-
-const MAX_VEL = 150;
-
-const ZONA_MUERTA = 0.15;
-
-
-let socket = null;
-
-
-
-function conectarWebSocket() {
-
-
-socket = new WebSocket(WS_URL);
-
-
-
-socket.onopen = () => {
-
-
-document.getElementById("status").innerText = 
-"MANDO PS4 -> ALTA VELOCIDAD";
-
-
-console.log("¡Conectado por WebSocket!");
-
-
-bucleControl();
-
-
-};
-
-
-
-socket.onclose = () => {
-
-
-document.getElementById("status").innerText =
-"CONEXIÓN PERDIDA";
-
-
-setTimeout(conectarWebSocket,2000);
-
-
-};
-
-
-}
-
-
-
-function bucleControl(){
-
-
-if(socket.readyState !== WebSocket.OPEN)
-return;
-
-
-
-const gamepads = navigator.getGamepads();
-
-
-const gp = gamepads[0];
-
-
-
-if(gp){
-
-
-
-let steer = gp.axes[0];
-
-
-let reversa = gp.buttons[6].value;
-
-
-let avance = gp.buttons[7].value;
-
-
-
-if(Math.abs(steer)<ZONA_MUERTA)
-steer=0;
-
-
-
-let throttle = (avance-reversa)*MAX_VEL;
-
-
-let giro = steer*MAX_VEL;
-
-
-
-let rpm_izq = throttle + giro;
-
-
-let rpm_der = throttle - giro;
-
-
-
-let max_actual =
-Math.max(
-Math.abs(rpm_izq),
-Math.abs(rpm_der)
-);
-
-
-
-if(max_actual > MAX_VEL){
-
-
-rpm_izq =
-(rpm_izq/max_actual)*MAX_VEL;
-
-
-rpm_der =
-(rpm_der/max_actual)*MAX_VEL;
-
-
-}
-
-
-
-
-document.getElementById("telemetry").innerText =
-
-JSON.stringify({
-
-"Gatillos_T":parseInt(throttle),
-
-"Joystick_G":parseInt(giro),
-
-"Motor_Izq":parseInt(rpm_izq),
-
-"Motor_Der":parseInt(rpm_der)
-
-},null,2);
-
-
-
-actualizarImagen(throttle,giro);
-
-
-
-socket.send(JSON.stringify({
-
-izq:parseInt(rpm_izq),
-
-der:parseInt(rpm_der)
-
-}));
-
-
-
-}
-
-
-
-requestAnimationFrame(bucleControl);
-
-
-
-}
-
-
-
-
-function actualizarImagen(throttle,giro){
-
-
-const img=document.getElementById("dynamic_image");
-
-
-
-if(throttle===0 && giro===0)
-
-img.src=IMAGE_FOLDER+"center.jpg";
-
-
-else if(throttle>0 && Math.abs(giro)<40)
-
-img.src=IMAGE_FOLDER+"forward.jpg";
-
-
-else if(throttle<0 && Math.abs(giro)<40)
-
-img.src=IMAGE_FOLDER+"backward.jpg";
-
-
-else if(giro>40)
-
-img.src=IMAGE_FOLDER+"right.jpg";
-
-
-else if(giro<-40)
-
-img.src=IMAGE_FOLDER+"left.jpg";
-
-}
-
-
-
-conectarWebSocket();
-
-
-</script>
-
-
+    <img id="robot_feed" alt="[ Esperando señal de cámara... ]">
+
+    <div class="panel">
+        <h2 id="status">CONECTANDO AL ROBOT...</h2>
+        
+        <div id="bat_box" class="battery-panel">
+            🔋 BATERÍA: <span id="bat_percent">--</span>% (<span id="bat_volts">--.--</span>V)
+        </div>
+
+        <pre id="telemetry">{ Esperando datos del mando... }</pre>
+    </div>
+    
+    <img id="dynamic_image" src="imgs/center.jpg" alt="Status" width="120">
+
+    <script>
+        const protocolo = window.location.protocol === "https:" ? "wss://" : "ws://";
+        const WS_URL = protocolo + window.location.host + "/robot";
+        const IMAGE_FOLDER = "imgs/";
+        
+        const MAX_VEL = 1000;         
+        const ZONA_MUERTA = 0.15;     
+        const GIRO_THRESH = 250;      
+        const EXPO_SUAVIZADO = 2.0;   
+
+        let socket = null;
+        let ultimoEnvioWS = 0; 
+        const INTERVALO_WS_MS = 30;   
+
+        function conectarWebSocket() {
+            socket = new WebSocket(WS_URL);
+
+            socket.onopen = () => {
+                document.getElementById("status").innerText = "SISTEMA INTEGRADO OK";
+                bucleControl();
+                
+                // 🔥 ACTIVACIÓN DE CÁMARA INFALIBLE:
+                // Conectamos el feed directamente al endpoint de Flask de forma nativa
+                document.getElementById("robot_feed").src = "/video_feed";
+                console.log("📺 ¡Streaming MJPEG activado con éxito!");
+            };
+
+            socket.onmessage = (event) => {
+                try {
+                    const datosWeb = JSON.parse(event.data);
+                    if (datosWeb.tipo === "telemetria") {
+                        const porcentaje = parseInt(datosWeb.porcentaje);
+                        const volts = parseFloat(datosWeb.voltaje).toFixed(2);
+                        document.getElementById("bat_percent").innerText = porcentaje;
+                        document.getElementById("bat_volts").innerText = volts;
+                        
+                        const batBox = document.getElementById("bat_box");
+                        if (porcentaje <= 20) batBox.classList.add("low-battery");
+                        else batBox.classList.remove("low-battery");
+                    }
+                } catch (e) {}
+            };
+
+            socket.onclose = () => {
+                document.getElementById("status").innerText = "CONEXIÓN PERDIDA";
+                document.getElementById("robot_feed").src = ""; // Apaga visor si cae la red
+                setTimeout(conectarWebSocket, 2000);
+            };
+        }
+
+        function bucleControl() {
+            if (socket.readyState !== WebSocket.OPEN) return;
+
+            const gamepads = navigator.getGamepads();
+            const gp = Array.from(gamepads).find(g => g !== null); 
+
+            if (gp) {
+                let steer = gp.axes[0];            
+                let reversa = gp.buttons[6].value;  
+                let avance = gp.buttons[7].value;   
+
+                if (Math.abs(steer) < ZONA_MUERTA) steer = 0;
+
+                let giroSuave = Math.sign(steer) * Math.pow(Math.abs(steer), EXPO_SUAVIZADO);
+                let avanceFrenado = avance - reversa; 
+                let throttleSuave = Math.sign(avanceFrenado) * Math.pow(Math.abs(avanceFrenado), EXPO_SUAVIZADO);
+
+                let throttle = throttleSuave * MAX_VEL;
+                let giro = giroSuave * MAX_VEL;
+
+                document.getElementById("telemetry").innerText = JSON.stringify({
+                    "Control_Activo": gp.id,
+                    "Gatillo_V": parseInt(throttle),
+                    "Joystick_W": parseInt(giro)
+                }, null, 2);
+
+                actualizarImagen(throttle, giro);
+
+                let tiempoActual = performance.now();
+                if (tiempoActual - ultimoEnvioWS >= INTERVALO_WS_MS) {
+                    ultimoEnvioWS = tiempoActual;
+                    socket.send(JSON.stringify({ v: parseInt(throttle), w: parseInt(giro) }));
+                }
+            } else {
+                document.getElementById("telemetry").innerText = "{ Presiona un botón en el mando para activarlo }";
+            }
+            requestAnimationFrame(bucleControl);
+        }
+
+        function actualizarImagen(throttle, giro) {
+            const img = document.getElementById("dynamic_image");
+            if (throttle === 0 && giro === 0) img.src = IMAGE_FOLDER + "center.jpg";
+            else if (throttle > 0 && Math.abs(giro) < GIRO_THRESH) img.src = IMAGE_FOLDER + "forward.jpg";
+            else if (throttle < 0 && Math.abs(giro) < GIRO_THRESH) img.src = IMAGE_FOLDER + "backward.jpg";
+            else if (giro > GIRO_THRESH) img.src = IMAGE_FOLDER + "right.jpg";
+            else if (giro < -GIRO_THRESH) img.src = IMAGE_FOLDER + "left.jpg";
+        }
+
+        conectarWebSocket();
+    </script>
 </body>
 </html>
